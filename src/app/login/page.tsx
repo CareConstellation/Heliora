@@ -252,6 +252,7 @@ export default function LoginPage() {
                 <button
                   key={role.id}
                   onClick={() => handleRoleSelect(role.id)}
+                  aria-label={`Select role: ${role.label}`}
                   className="w-full text-left rounded-[12px] p-4 flex items-start gap-4 transition-all duration-150 group"
                   style={{
                     background: 'var(--bg-card)',
@@ -302,6 +303,7 @@ export default function LoginPage() {
                   setStep('role');
                   setSelectedRole(null);
                 }}
+                aria-label="Back to role selection"
                 className="flex items-center gap-1.5 text-sm text-text-2 hover:text-text-1 transition-colors mb-5"
               >
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
@@ -321,6 +323,7 @@ export default function LoginPage() {
                   </div>
                   <button
                     onClick={() => lastWallet && handleWalletConnect(lastWallet)}
+                    aria-label="Retry wallet connection"
                     className="text-xs font-semibold ml-3 shrink-0 transition-colors hover:opacity-80"
                     style={{ color: '#00C896' }}
                   >
@@ -335,6 +338,7 @@ export default function LoginPage() {
                     key={wallet.id}
                     onClick={() => handleWalletConnect(wallet.id)}
                     disabled={!!connecting}
+                    aria-label={`Connect with ${wallet.label}`}
                     className="w-full text-left rounded-[12px] p-4 flex items-center justify-between transition-all duration-150 group disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{
                       background: 'var(--bg-card)',
