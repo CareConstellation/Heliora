@@ -1,4 +1,4 @@
-# Contributing to Healthy-Stellar
+# Contributing to Heliora
 
 Thank you for your interest in contributing! This guide will help you get your local environment running, understand our workflow, and submit high-quality pull requests.
 
@@ -14,6 +14,7 @@ Thank you for your interest in contributing! This guide will help you get your l
 6. [Code Style](#code-style)
 7. [Testing Expectations](#testing-expectations)
 8. [Issue Reporting](#issue-reporting)
+9. [Contact & Maintainer](#contact--maintainer)
 
 ---
 
@@ -21,11 +22,11 @@ Thank you for your interest in contributing! This guide will help you get your l
 
 Before you begin, make sure you have the following installed and configured:
 
-| Requirement                     | Version / Notes                                                                                                 |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **Node.js**                     | v18 or later (LTS recommended)                                                                                  |
-| **npm**                         | v9 or later (bundled with Node.js)                                                                              |
-| **Git**                         | Any recent version                                                                                              |
+| Requirement | Version / Notes |
+| --- | --- |
+| **Node.js** | v18 or later (LTS recommended) |
+| **npm** | v9 or later (bundled with Node.js) |
+| **Git** | Any recent version |
 | **Freighter browser extension** | Install from [freighter.app](https://www.freighter.app/) — required to sign Stellar transactions in the browser |
 
 ### Stellar Testnet Account
@@ -43,8 +44,8 @@ You need a funded testnet account to interact with the app locally:
 
 ```bash
 # 1. Fork the repository on GitHub, then clone your fork
-git clone https://github.com/<your-username>/Healthy-Stellar-frontend.git
-cd Healthy-Stellar-frontend
+git clone https://github.com/CareConstellation/Heliora.git
+cd Heliora
 
 # 2. Install dependencies
 npm install
@@ -67,14 +68,14 @@ The app will be available at `http://localhost:3000`.
 
 Always branch off from `main`. Use the following prefixes:
 
-| Prefix      | When to use                                 |
-| ----------- | ------------------------------------------- |
-| `feat/`     | New feature or enhancement                  |
-| `fix/`      | Bug fix                                     |
-| `docs/`     | Documentation only changes                  |
-| `chore/`    | Tooling, config, dependency updates         |
+| Prefix | When to use |
+| --- | --- |
+| `feat/` | New feature or enhancement |
+| `fix/` | Bug fix |
+| `docs/` | Documentation only changes |
+| `chore/` | Tooling, config, dependency updates |
 | `refactor/` | Code restructuring without behaviour change |
-| `test/`     | Adding or updating tests                    |
+| `test/` | Adding or updating tests |
 
 **Format:** `<prefix>/<issue-number>-short-description`
 
@@ -104,25 +105,15 @@ Closes #<issue-number>
 
 **Types:**
 
-| Type       | When to use                                     |
-| ---------- | ----------------------------------------------- |
-| `feat`     | Introduces a new feature                        |
-| `fix`      | Fixes a bug                                     |
-| `docs`     | Documentation changes only                      |
-| `style`    | Formatting, whitespace (no logic change)        |
+| Type | When to use |
+| --- | --- |
+| `feat` | Introduces a new feature |
+| `fix` | Fixes a bug |
+| `docs` | Documentation changes only |
+| `style` | Formatting, whitespace (no logic change) |
 | `refactor` | Code change that is neither a fix nor a feature |
-| `test`     | Adding or correcting tests                      |
-| `chore`    | Build process, tooling, dependency updates      |
-
-**Examples:**
-
-```
-feat(appointments): add slot picker with real-time availability
-
-fix(auth): prevent redirect loop when role is null
-
-docs(contributing): add testnet setup instructions
-```
+| `test` | Adding or correcting tests |
+| `chore` | Build process, tooling, dependency updates |
 
 ---
 
@@ -169,31 +160,26 @@ npm run format
 
 ### Naming Conventions
 
-| Entity                | Convention                            | Example                     |
-| --------------------- | ------------------------------------- | --------------------------- |
-| React components      | PascalCase                            | `RecordCard.tsx`            |
-| Hooks                 | camelCase, `use` prefix               | `useRoleRedirect.ts`        |
-| Zustand stores        | camelCase, `use` prefix               | `useWalletStore.ts`         |
-| Utility functions     | camelCase                             | `truncateAddress`           |
-| Types / Interfaces    | PascalCase                            | `UserRole`, `MedicalRecord` |
-| Environment variables | `NEXT_PUBLIC_` prefix for client-side | `NEXT_PUBLIC_API_URL`       |
-
-### Component Structure
-
-Prefer small, single-responsibility components. Co-locate component-specific logic inside the component file unless it is reused elsewhere. Keep shared types in `src/types/index.ts`.
+| Entity | Convention | Example |
+| --- | --- | --- |
+| React components | PascalCase | `RecordCard.tsx` |
+| Hooks | camelCase, `use` prefix | `useRoleRedirect.ts` |
+| Zustand stores | camelCase, `use` prefix | `useWalletStore.ts` |
+| Utility functions | camelCase | `truncateAddress` |
+| Types / Interfaces | PascalCase | `UserRole`, `MedicalRecord` |
+| Environment variables | `NEXT_PUBLIC_` prefix for client-side | `NEXT_PUBLIC_API_URL` |
 
 ---
 
 ## Testing Expectations
 
 - All new features and bug fixes must include relevant tests before a PR can be merged.
-- Unit tests live alongside the code they test (e.g., `RecordCard.test.tsx` next to `RecordCard.tsx`).
+- Unit tests live alongside the code they test.
 - Run the test suite before pushing:
   ```bash
   npm run test
   ```
 - Aim for meaningful coverage of business logic, edge cases, and error states — not just happy paths.
-- Do not disable or skip existing tests without a documented reason.
 
 ---
 
@@ -201,7 +187,7 @@ Prefer small, single-responsibility components. Co-locate component-specific log
 
 ### Bug Reports
 
-Open a **Bug Report** issue and include:
+Open a **Bug Report** issue on GitHub or contact the maintainer:
 
 - A clear, descriptive title
 - Steps to reproduce the problem
@@ -209,12 +195,11 @@ Open a **Bug Report** issue and include:
 - Browser, OS, and Node.js version
 - Relevant console errors or screenshots
 
-### Feature Requests
+---
 
-Open a **Feature Request** issue and include:
+## Contact & Maintainer
 
-- The problem you are trying to solve
-- Your proposed solution or approach
-- Any alternatives you considered
-
-> Before opening a new issue, please search existing issues to avoid duplicates.
+For any questions, security concerns, or direct inquiries:
+- **Maintainer:** Aderonke Afolabi
+- **Email:** [afolabiaderonke1995@gmail.com](mailto:afolabiaderonke1995@gmail.com)
+- **Repository:** [https://github.com/CareConstellation/Heliora](https://github.com/CareConstellation/Heliora)

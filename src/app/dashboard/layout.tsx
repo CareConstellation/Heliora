@@ -136,7 +136,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <Activity className="w-3.5 h-3.5" style={{ color: '#00C896' }} />
             </div>
             <span className="text-sm font-bold text-text-1">
-              Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+              Heli<span style={{ color: '#00C896' }}>ora</span>
             </span>
           </Link>
         </div>
@@ -236,7 +236,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Link href="/" className="lg:hidden flex items-center gap-2">
               <Activity className="w-4 h-4" style={{ color: '#00C896' }} />
               <span className="text-sm font-bold text-text-1">
-                Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+                Heli<span style={{ color: '#00C896' }}>ora</span>
               </span>
             </Link>
             {/* Network pill */}
@@ -310,7 +310,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   <Activity className="w-3.5 h-3.5" style={{ color: '#00C896' }} />
                 </div>
                 <span className="text-sm font-bold text-text-1">
-                  Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+                  Heli<span style={{ color: '#00C896' }}>ora</span>
                 </span>
               </Link>
               <button

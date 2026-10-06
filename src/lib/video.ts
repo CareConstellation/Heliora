@@ -1,6 +1,6 @@
 import type { Appointment } from '@/types';
 
-const DAILY_DOMAIN = process.env.NEXT_PUBLIC_DAILY_DOMAIN || 'healthystellar';
+const DAILY_DOMAIN = process.env.NEXT_PUBLIC_DAILY_DOMAIN || 'heliora';
 const APPOINTMENT_DURATION_MS = 60 * 60 * 1000; // matches BookingConfirmation's ICS event length
 const JOIN_WINDOW_MS = 15 * 60 * 1000; // link becomes visible 15 min before start
 

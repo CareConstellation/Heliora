@@ -22,7 +22,7 @@ export function Header() {
       >
         {/* Brand */}
         <Link href="/" className="text-lg font-bold text-green hover:text-green-600">
-          Healthy-Stellar
+          Heliora
         </Link>
 
         {/* Role-specific nav links */}

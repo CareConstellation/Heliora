@@ -19,7 +19,7 @@ function buildICS(appt: Appointment): string {
     `DTEND:${fmt(end)}`,
     `SUMMARY:Appointment with Dr. ${appt.doctorName}`,
     `DESCRIPTION:Type: ${appt.type}`,
-    `UID:${appt.id}@healthystellar`,
+    `UID:${appt.id}@heliora`,
     'END:VEVENT',
     'END:VCALENDAR',
   ].join('\r\n');

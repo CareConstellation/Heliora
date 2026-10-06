@@ -1,4 +1,4 @@
-# HealthyStellar API Reference
+# Heliora API Reference
 
 > **Base URL:** `{{NEXT_PUBLIC_API_URL}}` (configured in `.env.local`)
 >

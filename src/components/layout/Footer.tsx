@@ -33,7 +33,7 @@ const cols = [
       { label: 'Documentation', href: '/docs' },
       { label: 'API Reference', href: '/docs/api' },
       { label: 'Smart Contracts', href: '/docs/contracts' },
-      { label: 'GitHub', href: 'https://github.com' },
+      { label: 'GitHub', href: 'https://github.com/CareConstellation/Heliora' },
     ],
   },
   {
@@ -67,7 +67,7 @@ export default function Footer() {
                 <Activity className="w-4 h-4" style={{ color: '#00C896' }} />
               </div>
               <span className="font-bold text-text-1">
-                Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+                Heli<span style={{ color: '#00C896' }}>ora</span>
               </span>
             </Link>
             <p className="text-text-2 text-sm leading-relaxed max-w-[200px]">
@@ -75,7 +75,7 @@ export default function Footer() {
             </p>
             <div className="flex items-center gap-2 mt-5">
               {[
-                { icon: GithubIcon, href: 'https://github.com' },
+                { icon: GithubIcon, href: 'https://github.com/CareConstellation/Heliora' },
                 { icon: TwitterIcon, href: 'https://twitter.com' },
               ].map(({ icon: Icon, href }) => (
                 <a
@@ -123,7 +123,7 @@ export default function Footer() {
           style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
         >
           <p className="text-text-3 text-xs">
-            © {new Date().getFullYear()} HealthyStellar. All rights reserved.
+            © {new Date().getFullYear()} Heliora. All rights reserved.
           </p>
           <div className="flex items-center gap-1.5 text-xs text-text-3">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse-dot" />

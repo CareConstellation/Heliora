@@ -29,7 +29,7 @@ export default function RoleNotRegisteredPage() {
 
       <h1 className="text-3xl font-bold text-text-1">Role Not Registered</h1>
       <p className="mt-4 text-base text-text-2 max-w-md">
-        Your wallet is connected, but no role has been assigned to it on the Healthy-Stellar
+        Your wallet is connected, but no role has been assigned to it on the Heliora
         platform. Please contact the platform administrator to have your role assigned.
       </p>
 
@@ -42,7 +42,7 @@ export default function RoleNotRegisteredPage() {
           Disconnect &amp; Go Home
         </Link>
         <a
-          href="mailto:support@healthy-stellar.io"
+          href="mailto:afolabiaderonke1995@gmail.com"
           className="text-sm font-semibold text-text-2 hover:text-text-1"
         >
           Contact Support

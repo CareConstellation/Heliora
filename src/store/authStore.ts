@@ -24,7 +24,7 @@ export const useAuthStore = create<AuthState>()(
       clearAuth: () => set({ walletAddress: null, role: null, isLoading: false }),
     }),
     {
-      name: 'healthy-stellar-auth',
+      name: 'heliora-auth',
       // Only persist address and role, not loading state
       partialize: (state) => ({
         walletAddress: state.walletAddress,

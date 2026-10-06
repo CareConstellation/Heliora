@@ -559,7 +559,7 @@ export default function HomePage() {
               Designed for every stakeholder
             </h2>
             <p className="text-text-2 text-base">
-              Whether you are a patient, clinician, or institution, HealthyStellar has role-specific
+              Whether you are a patient, clinician, or institution, Heliora has role-specific
               tools built for your workflow.
             </p>
           </div>

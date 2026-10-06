@@ -127,7 +127,7 @@ export default function LoginPage() {
             <Activity className="w-5 h-5" style={{ color: '#00C896' }} />
           </div>
           <span className="font-bold text-lg text-text-1">
-            Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+            Heli<span style={{ color: '#00C896' }}>ora</span>
           </span>
         </Link>
 
@@ -181,7 +181,7 @@ export default function LoginPage() {
             <Activity className="w-4 h-4" style={{ color: '#00C896' }} />
           </div>
           <span className="font-bold text-text-1">
-            Healthy<span style={{ color: '#00C896' }}>Stellar</span>
+            Heli<span style={{ color: '#00C896' }}>ora</span>
           </span>
         </Link>
 
@@ -232,7 +232,7 @@ export default function LoginPage() {
             </h1>
             <p className="text-sm text-text-2">
               {step === 'role' ? (
-                'Select how you will use HealthyStellar to get the right dashboard.'
+                'Select how you will use Heliora to get the right dashboard.'
               ) : (
                 <>
                   Connecting as{' '}

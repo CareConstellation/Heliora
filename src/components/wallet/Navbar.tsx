@@ -20,7 +20,7 @@ export default function Navbar() {
       <nav className="sticky top-0 z-40 w-full border-b border-slate-200 bg-white/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
           <Link href="/" className="font-bold text-green text-lg">
-            HealthyStella
+            Heliora
           </Link>
 
           <div className="flex items-center gap-3">

@@ -14,7 +14,7 @@ Tracks the authenticated user's wallet/role and loading status during auth check
 
 Actions: `setWalletAddress`, `setRole`, `setIsLoading`, `clearAuth` (resets all fields).
 
-**Persistence**: stored under the `healthy-stellar-auth` localStorage key. Uses `partialize` to persist only `walletAddress` and `role` — `isLoading` is always reset to `false` on reload.
+**Persistence**: stored under the `heliora-auth` localStorage key. Uses `partialize` to persist only `walletAddress` and `role` — `isLoading` is always reset to `false` on reload.
 
 **Consumers**: `src/context/Providers.tsx`, `src/app/dashboard/layout.tsx`, `src/app/role-not-registered/page.tsx`, `src/components/navigation/Header.tsx`.
 
