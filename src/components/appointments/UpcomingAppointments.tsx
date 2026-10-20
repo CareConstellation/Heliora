@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchAppointments, cancelAppointment } from '@/services/api.service';
+import { fetchAppointments, cancelAppointmentWithPenalty } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
-import { withVideoRoom, isVideoLinkActive } from '@/lib/video';
+import { isVideoLinkActive } from '@/lib/video';
 import { useToast } from '@/hooks/useToast';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import { CancellationEstimateDisplay, calculateCancellationAmounts } from './CancellationPolicy';
 import type { Appointment } from '@/types';
 
 export default function UpcomingAppointments() {
@@ -15,8 +16,6 @@ export default function UpcomingAppointments() {
   const { toast } = useToast();
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
 
-  const queryClient = useQueryClient();
-
   const { data: appointments, isLoading } = useQuery({
     queryKey: ['patient-appointments', publicKey],
     queryFn: () => fetchAppointments(publicKey!, 'patient'),
@@ -24,7 +23,7 @@ export default function UpcomingAppointments() {
   });
 
   const cancelMutation = useMutation({
-    mutationFn: (id: string) => cancelAppointment(id),
+    mutationFn: (id: string) => cancelAppointmentWithPenalty(id, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['patient-appointments', publicKey] });
       toast('Appointment cancelled', 'success');
@@ -42,6 +41,19 @@ export default function UpcomingAppointments() {
 
   if (upcoming.length === 0)
     return <p className="text-sm text-text-3 text-center py-4">No upcoming appointments.</p>;
+
+  const cancelMessage = appointmentToCancel
+    ? (() => {
+        const { refundAmount, forfeitAmount, tier } = calculateCancellationAmounts(
+          appointmentToCancel.fee,
+          appointmentToCancel.datetime,
+        );
+        return `Cancel appointment with Dr. ${appointmentToCancel.doctorName}?\n\n` +
+          `Window: ${tier.label}\n` +
+          `Refund: ${refundAmount.toFixed(2)} XLM (${tier.refundPercent}%)\n` +
+          `Forfeit to doctor: ${forfeitAmount.toFixed(2)} XLM (${tier.forfeitPercent}%)`;
+      })()
+    : '';
 
   return (
     <div className="space-y-3">
@@ -88,15 +100,21 @@ export default function UpcomingAppointments() {
       ))}
 
       {appointmentToCancel && (
-        <ConfirmDialog
-          title="Cancel appointment"
-          message={`Are you sure you want to cancel your appointment with Dr. ${appointmentToCancel.doctorName}?`}
-          confirmLabel="Cancel appointment"
-          cancelLabel="Keep appointment"
-          isLoading={cancelMutation.isPending}
-          onConfirm={() => cancelMutation.mutate(appointmentToCancel.id)}
-          onCancel={() => setAppointmentToCancel(null)}
-        />
+        <>
+          <CancellationEstimateDisplay
+            appointmentId={appointmentToCancel.id}
+            fee={appointmentToCancel.fee}
+          />
+          <ConfirmDialog
+            title="Cancel appointment"
+            message={cancelMessage}
+            confirmLabel="Cancel & accept penalty"
+            cancelLabel="Keep appointment"
+            isLoading={cancelMutation.isPending}
+            onConfirm={() => cancelMutation.mutate(appointmentToCancel.id)}
+            onCancel={() => setAppointmentToCancel(null)}
+          />
+        </>
       )}
     </div>
   );

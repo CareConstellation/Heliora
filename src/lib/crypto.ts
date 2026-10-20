@@ -591,3 +591,152 @@ export async function exportRecipientPublicKey(keyPair: CryptoKeyPair): Promise<
   const { kty, crv, x, y } = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
   return { kty: kty!, crv: crv!, x: x!, y: y! };
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   #39 — Forensic watermarking & cryptographic fingerprinting
+   ═══════════════════════════════════════════════════════════════════ */
+
+export interface WatermarkPayload {
+  viewerPublicKey: string;
+  viewerIpHash: string;
+  viewedAt: string;
+}
+
+/**
+ * Computes a SHA-256 fingerprint of the viewer's identity + timestamp. The hash
+ * is used as the content of the watermark so the original viewer can be traced
+ * forensically without displaying raw PII.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export async function computeViewerFingerprint(payload: WatermarkPayload): Promise<string> {
+  const raw = `${payload.viewerPublicKey}:${payload.viewerIpHash}:${payload.viewedAt}`;
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+  return toHex(new Uint8Array(hash));
+}
+
+export interface WatermarkConfig {
+  payload: WatermarkPayload;
+  fingerprint: string;
+  opacity?: number;
+  fontSize?: number;
+  rotation?: number;
+  color?: string;
+}
+
+/**
+ * Renders a repeating diagonal forensic watermark onto a canvas context.
+ * The watermark contains the truncated SHA-256 fingerprint and ISO timestamp,
+ * tiled across the full canvas area.
+ *
+ * Time: O(r × c) where r,c = tile rows/cols. Space: O(1) drawing state.
+ */
+export function renderCanvasWatermark(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  config: WatermarkConfig,
+): void {
+  const {
+    fingerprint,
+    payload,
+    opacity = 0.06,
+    fontSize = 14,
+    rotation = -30,
+    color = '128,128,128',
+  } = config;
+
+  const label = `${fingerprint.slice(0, 16)} · ${payload.viewedAt}`;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.font = `${fontSize}px monospace`;
+  ctx.fillStyle = `rgb(${color})`;
+
+  const radians = (rotation * Math.PI) / 180;
+  const stepX = fontSize * label.length * 0.55;
+  const stepY = fontSize * 4;
+
+  for (let y = -height; y < height * 2; y += stepY) {
+    for (let x = -width; x < width * 2; x += stepX) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(radians);
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Applies a steganographic watermark to an ImageData by encoding the fingerprint
+ * into the least-significant bits of the blue channel. Uses a seeded position
+ * pattern so the same fingerprint always embeds at the same pixel offsets.
+ *
+ * Capacity: 256 bits (32-byte fingerprint) need 256 pixels out of a typical
+ * medical image with millions, so the visual distortion is imperceptible.
+ *
+ * Time: O(f) where f = fingerprint length in bits (256). Space: O(1).
+ */
+export function embedSteganographicWatermark(
+  imageData: ImageData,
+  fingerprint: string,
+): ImageData {
+  const bytes = hexToBytes(fingerprint.slice(0, 64));
+  const pixels = imageData.data;
+  const totalPixels = imageData.width * imageData.height;
+
+  const seed = ((bytes[0] ?? 0) << 8) | (bytes[1] ?? 0);
+  let position = seed % totalPixels;
+
+  for (const byte of bytes) {
+    for (let bit = 7; bit >= 0; bit--) {
+      const pixelIndex = position * 4 + 2; // blue channel
+      if (pixelIndex < pixels.length) {
+        pixels[pixelIndex] = ((pixels[pixelIndex] ?? 0) & 0xfe) | ((byte >> bit) & 1);
+      }
+      position = (position + 7919) % totalPixels; // prime step for spread
+    }
+  }
+
+  return imageData;
+}
+
+/**
+ * Extracts a steganographic fingerprint previously embedded by
+ * {@link embedSteganographicWatermark}.
+ *
+ * Time: O(f) where f = fingerprint length in bits. Space: O(1).
+ */
+export function extractSteganographicWatermark(
+  imageData: ImageData,
+  seedHint: number,
+): string {
+  const totalPixels = imageData.width * imageData.height;
+  const pixels = imageData.data;
+  let position = seedHint % totalPixels;
+
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    let byte = 0;
+    for (let bit = 7; bit >= 0; bit--) {
+      const pixelIndex = position * 4 + 2;
+      if (pixelIndex < pixels.length) {
+        byte |= ((pixels[pixelIndex] ?? 0) & 1) << bit;
+      }
+      position = (position + 7919) % totalPixels;
+    }
+    bytes[i] = byte;
+  }
+
+  return toHex(bytes);
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+  }
+  return bytes;
+}

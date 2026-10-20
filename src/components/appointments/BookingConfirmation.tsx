@@ -1,6 +1,7 @@
 'use client';
 
 import type { Appointment } from '@/types';
+import { CancellationPolicyMatrix } from './CancellationPolicy';
 
 interface Props {
   appointment: Appointment;
@@ -48,7 +49,9 @@ export default function BookingConfirmation({ appointment, onDone }: Props) {
       </p>
       <p className="text-xs text-text-3 mb-6">Ref: {appointment.id}</p>
 
-      <div className="flex gap-3">
+      <CancellationPolicyMatrix doctorId={appointment.doctorId} />
+
+      <div className="flex gap-3 mt-4">
         <button
           onClick={downloadICS}
           className="rounded-md border border-border px-4 py-2 text-sm font-medium text-text-1 hover:bg-surface-hover"
