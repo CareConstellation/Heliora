@@ -27,6 +27,7 @@ import {
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
+import AvailabilityConfig from '@/components/doctor/AvailabilityConfig';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -511,6 +512,9 @@ export default function DoctorDashboard() {
               )}
             </div>
           </div>
+
+          {/* Availability & Buffer Config (Issue #51) */}
+          <AvailabilityConfig />
         </div>
       </div>
 

@@ -34,6 +34,7 @@ export interface TimeSlot {
   id: string;
   datetime: string;
   available: boolean;
+  slotType?: 'regular' | 'emergency' | 'buffer';
 }
 
 export interface Appointment {
@@ -133,4 +134,32 @@ export interface BulkImportResponse {
   failed: number;
   errors: Array<{ row: number; message: string }>;
   records: MedicalRecord[];
+}
+
+export interface EncounterNote {
+  id: string;
+  appointmentId: string;
+  doctorAddress: string;
+  patientAddress: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AnnotationTool = 'pen' | 'arrow' | 'highlighter' | 'text';
+
+export interface AnnotationStroke {
+  id: string;
+  tool: AnnotationTool;
+  points: { x: number; y: number }[];
+  color: string;
+  lineWidth: number;
+  text?: string;
+}
+
+export interface AvailabilityBufferConfig {
+  bufferMinutes: number;
+  minNoticeHours: number;
+  emergencySlotsPerDay: number;
+  emergencySlotIds: string[];
 }

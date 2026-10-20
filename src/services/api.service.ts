@@ -1,6 +1,6 @@
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig } from '@/types';
 
 /**
  * Shared axios instance for all API calls.
@@ -270,3 +270,26 @@ export const bulkUpdateStaff = (
  */
 export const bulkImportRecords = (patientAddress: string, records: BulkRecordImportRow[]) =>
   api.post<BulkImportResponse>('/records/batch', { patientAddress, records }).then((r) => r.data);
+
+// Encounter Notes
+
+export const fetchEncounterNote = (appointmentId: string) =>
+  api.get<EncounterNote>(`/appointments/${appointmentId}/notes`).then((r) => r.data);
+
+export const saveEncounterNote = (appointmentId: string, content: string) =>
+  api.post<EncounterNote>(`/appointments/${appointmentId}/notes`, { content }).then((r) => r.data);
+
+// Doctor Availability Configuration
+
+export const fetchAvailabilityConfig = (doctorAddress: string) =>
+  api
+    .get<AvailabilityBufferConfig>('/doctors/availability-config', { params: { doctorAddress } })
+    .then((r) => r.data);
+
+export const updateAvailabilityConfig = (
+  doctorAddress: string,
+  config: AvailabilityBufferConfig,
+) =>
+  api
+    .put<AvailabilityBufferConfig>('/doctors/availability-config', { doctorAddress, ...config })
+    .then((r) => r.data);
