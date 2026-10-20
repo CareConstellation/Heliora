@@ -275,3 +275,13 @@ export interface SignedDisputeAttestation {
   /** Hex ed25519 signature by the oracle key over the attestation's `ScVal` XDR. */
   signature: string;
 }
+
+/* ── Cancellation policy (#53) ───────────────────────────────────── */
+
+export interface CancellationTier {
+  label: string;
+  minHoursBefore: number;
+  maxHoursBefore: number | null;
+  refundPercent: number;
+  forfeitPercent: number;
+}

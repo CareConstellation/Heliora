@@ -427,3 +427,62 @@ export const requestDisputeAttestation = (appointmentId: string) =>
   api
     .post<SignedDisputeAttestation>('/disputes/attestations', { appointmentId })
     .then((r) => r.data);
+
+// No-show cancellation policy & fee penalties (#53)
+
+export interface CancellationPolicy {
+  tiers: CancellationTier[];
+}
+
+export interface CancellationTier {
+  label: string;
+  minHoursBefore: number;
+  maxHoursBefore: number | null;
+  refundPercent: number;
+  forfeitPercent: number;
+}
+
+export interface CancellationEstimate {
+  appointmentId: string;
+  fee: number;
+  hoursUntilAppointment: number;
+  tier: CancellationTier;
+  refundAmount: number;
+  forfeitAmount: number;
+  doctorPayout: number;
+}
+
+/**
+ * Fetch the provider's cancellation policy tiers.
+ * @param doctorId - Doctor's ID (policy may vary by provider).
+ * @returns {@link CancellationPolicy}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchCancellationPolicy = (doctorId: string) =>
+  api
+    .get<CancellationPolicy>(`/doctors/${doctorId}/cancellation-policy`)
+    .then((r) => r.data);
+
+/**
+ * Calculate the refundable vs. forfeited amounts for a pending cancellation.
+ * @param appointmentId - Appointment ID.
+ * @returns {@link CancellationEstimate}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchCancellationEstimate = (appointmentId: string) =>
+  api
+    .get<CancellationEstimate>(`/appointments/${appointmentId}/cancellation-estimate`)
+    .then((r) => r.data);
+
+/**
+ * Cancel an appointment with fee penalty processing. The backend splits the payment:
+ * refundable portion back to patient, forfeited portion to the doctor.
+ * @param appointmentId - Appointment ID.
+ * @param confirm - Must be true to acknowledge the penalty.
+ * @returns The updated {@link Appointment} with `status: 'cancelled'`.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const cancelAppointmentWithPenalty = (appointmentId: string, confirm: boolean) =>
+  api
+    .post<Appointment>(`/appointments/${appointmentId}/cancel-with-penalty`, { confirm })
+    .then((r) => r.data);
