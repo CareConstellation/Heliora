@@ -1,6 +1,7 @@
 'use client';
 
 import type { MedicalRecord } from '@/types';
+import RecordIpfsStatus from './RecordIpfsStatus';
 
 interface Props {
   record: MedicalRecord;
@@ -58,6 +59,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
               <dd className="mt-1 text-slate-900 whitespace-pre-wrap">{record.notes}</dd>
             </div>
           )}
+          <RecordIpfsStatus recordId={record.id} />
         </dl>
       </div>
     </div>

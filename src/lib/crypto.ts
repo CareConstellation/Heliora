@@ -12,16 +12,18 @@
  * - No password-based key derivation (e.g. PBKDF2/Argon2) is used. Each call to
  *   {@link encryptFile} generates a fresh random 256-bit `CryptoKey` via
  *   `crypto.subtle.generateKey`, scoped to a single file.
- * - The key is generated as `extractable: true` so it can be exported and sent
- *   to the backend (see {@link exportKey}). As currently wired up in
- *   `MedicalRecordUpload.tsx`, the exported key is uploaded to the server in the
- *   same request as the encrypted file — i.e. the server receives both the
- *   ciphertext and the key needed to decrypt it. This scheme protects the file
- *   in transit/at rest against anyone who does *not* have server access, but it
- *   does **not** protect confidentiality from the backend/storage layer itself.
- *   Any redesign to keep the server from ever seeing plaintext-equivalent
- *   access would need out-of-band key custody (e.g. per-user/per-share keys
- *   not transmitted alongside the ciphertext).
+ * - The key is generated as `extractable: true` so it can be exported (see
+ *   {@link exportKey}). Sending an exported key alongside the ciphertext would
+ *   give the backend plaintext-equivalent access, so `MedicalRecordUpload.tsx`
+ *   instead uses the envelope format below, where the key never leaves the
+ *   client unwrapped.
+ *
+ * ## Streaming envelope encryption (large files, multi-recipient sharing)
+ * {@link encryptFileToEnvelope} encrypts files of up to 250 MB as a stream of
+ * 64 KiB AES-256-GCM chunks, so memory use stays constant whatever the file
+ * size. The random per-file Data Encryption Key (DEK) is wrapped separately for
+ * each recipient with ECDH P-256 + HKDF-SHA-256 + AES-KW. You can add or remove
+ * recipients by editing only the JSON header; the ciphertext body is not changed.
  *
  * ## IV handling
  * A new 96-bit (12-byte) IV is generated per encryption via
@@ -86,4 +88,506 @@ export async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Streaming envelope encryption (#24) + multi-recipient KEM (#25)
+   ═══════════════════════════════════════════════════════════════════ */
+
+type Bytes = Uint8Array<ArrayBuffer>;
+
+/** Plaintext bytes per encrypted chunk (64 KiB). */
+export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
+/** Largest file accepted by {@link encryptFileToEnvelope} (250 MB). */
+export const MAX_ENVELOPE_FILE_BYTES = 250 * 1024 * 1024;
+
+const GCM_TAG_BYTES = 16;
+const NONCE_PREFIX_BYTES = 7;
+const ENVELOPE_MAGIC = 'HLE1';
+const MAX_HEADER_BYTES = 1024 * 1024;
+const KEM_INFO_LABEL = 'heliora/envelope/v1/ecdh-p256-hkdf-sha256-a256kw';
+const ECDH_P256 = { name: 'ECDH', namedCurve: 'P-256' } as const;
+
+/** A recipient's wrapped copy of the file's Data Encryption Key. */
+export interface EnvelopeRecipient {
+  /** Recipient identifier (their Stellar account address). */
+  id: string;
+  /** Ephemeral P-256 public key (JWK) used for this recipient's key agreement. */
+  epk: JsonWebKey;
+  /** Base64 AES-KW (RFC 3394) wrap of the 256-bit DEK; 40 bytes. */
+  wrappedKey: string;
+}
+
+/**
+ * JSON header of the envelope container. Everything except `recipients` is
+ * fixed when the file is encrypted. `recipients` can change without touching
+ * the ciphertext body.
+ */
+export interface EnvelopeHeader {
+  version: 1;
+  cipher: 'AES-256-GCM-STREAM';
+  kem: 'ECDH-P256+HKDF-SHA256+A256KW';
+  /** Plaintext bytes per chunk. Every chunk except the last is exactly this size. */
+  chunkSize: number;
+  plaintextSize: number;
+  /** Base64 7-byte random nonce prefix shared by every chunk of this file. */
+  noncePrefix: string;
+  recipients: EnvelopeRecipient[];
+}
+
+/** A recipient's long-term ECDH P-256 public key. */
+export interface RecipientPublicKey {
+  id: string;
+  publicKey: JsonWebKey;
+}
+
+export interface EncryptedEnvelope {
+  header: EnvelopeHeader;
+  /** Ciphertext body: each chunk's ciphertext followed by its 16-byte GCM tag, in order. */
+  body: Blob;
+  /**
+   * Hex SHA-256 over the concatenated SHA-256 digests of the ciphertext chunks.
+   * It covers only the body, so it stays stable when recipients change.
+   */
+  contentHash: string;
+}
+
+/* ── Encoding helpers ─────────────────────────────────────────────── */
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function fromBase64(value: string): Bytes {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function concatBytes(...parts: Uint8Array[]): Bytes {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+/* ── Chunk framing (STREAM construction, as in Tink's AES-GCM-HKDF streaming) ── */
+
+/** Number of chunks for a plaintext of `size` bytes. An empty file still has one empty chunk. */
+function chunkCount(size: number, chunkSize: number): number {
+  return Math.max(1, Math.ceil(size / chunkSize));
+}
+
+/**
+ * Builds the 12-byte IV: `noncePrefix (7) ‖ chunkIndex (4, big-endian) ‖ lastChunkFlag (1)`.
+ * IVs are sequential and never repeat under one DEK. The last-chunk flag makes
+ * truncating, reordering or appending chunks fail authentication.
+ */
+function chunkIv(noncePrefix: Uint8Array, index: number, last: boolean): Bytes {
+  const iv = new Uint8Array(12);
+  iv.set(noncePrefix, 0);
+  new DataView(iv.buffer).setUint32(NONCE_PREFIX_BYTES, index, false);
+  iv[11] = last ? 1 : 0;
+  return iv;
+}
+
+/**
+ * Pull-based source of exact `chunkSize` slices of a Blob. Only the slice
+ * being read is held in memory: O(chunkSize) space.
+ */
+function blobChunkStream(blob: Blob, chunkSize: number): ReadableStream<Bytes> {
+  const total = chunkCount(blob.size, chunkSize);
+  let index = 0;
+  return new ReadableStream<Bytes>({
+    async pull(controller) {
+      if (index === total) {
+        controller.close();
+        return;
+      }
+      const start = index * chunkSize;
+      const slice = blob.slice(start, Math.min(blob.size, start + chunkSize));
+      index++;
+      controller.enqueue(new Uint8Array(await slice.arrayBuffer()));
+    },
+  });
+}
+
+/** Encrypts the i-th plaintext chunk with the STREAM IV for position i. */
+function chunkEncryptor(
+  dek: CryptoKey,
+  noncePrefix: Uint8Array,
+  total: number,
+): TransformStream<Bytes, Bytes> {
+  let index = 0;
+  return new TransformStream<Bytes, Bytes>({
+    async transform(chunk, controller) {
+      if (index >= total) throw new Error('Envelope: more chunks than declared.');
+      const iv = chunkIv(noncePrefix, index, index === total - 1);
+      index++;
+      controller.enqueue(
+        new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, dek, chunk)),
+      );
+    },
+  });
+}
+
+/** Re-frames an arbitrary byte stream into fixed `segmentSize` segments (the last one may be shorter). */
+function segmenter(segmentSize: number): TransformStream<Uint8Array, Bytes> {
+  let buffer = new Uint8Array(segmentSize);
+  let filled = 0;
+  return new TransformStream<Uint8Array, Bytes>({
+    transform(chunk, controller) {
+      let offset = 0;
+      while (offset < chunk.length) {
+        const n = Math.min(segmentSize - filled, chunk.length - offset);
+        buffer.set(chunk.subarray(offset, offset + n), filled);
+        filled += n;
+        offset += n;
+        if (filled === segmentSize) {
+          controller.enqueue(buffer);
+          buffer = new Uint8Array(segmentSize);
+          filled = 0;
+        }
+      }
+    },
+    flush(controller) {
+      if (filled > 0) controller.enqueue(buffer.slice(0, filled));
+    },
+  });
+}
+
+/** Decrypts and authenticates each ciphertext segment, and rejects truncated or extended bodies. */
+function chunkDecryptor(
+  dek: CryptoKey,
+  noncePrefix: Uint8Array,
+  total: number,
+): TransformStream<Bytes, Bytes> {
+  let index = 0;
+  return new TransformStream<Bytes, Bytes>({
+    async transform(segment, controller) {
+      if (index >= total) throw new Error('Envelope: ciphertext has trailing data.');
+      const iv = chunkIv(noncePrefix, index, index === total - 1);
+      index++;
+      controller.enqueue(
+        new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, dek, segment)),
+      );
+    },
+    flush() {
+      if (index !== total) throw new Error('Envelope: ciphertext is truncated.');
+    },
+  });
+}
+
+/* ── Key encapsulation: ECDH P-256 → HKDF-SHA-256 → AES-KW ──────────── */
+
+/**
+ * Derives the AES-KW key-encryption key for one (ephemeral, recipient) pair.
+ * HKDF `info` binds the ephemeral and recipient public keys (as HPKE's
+ * kem_context does), so a wrapped key cannot be replayed to another recipient.
+ */
+async function deriveKek(
+  privateKey: CryptoKey,
+  peerPublicKey: CryptoKey,
+  ephemeralPublic: CryptoKey,
+  recipientPublic: CryptoKey,
+): Promise<CryptoKey> {
+  const [shared, epkRaw, pkRaw] = await Promise.all([
+    crypto.subtle.deriveBits({ name: 'ECDH', public: peerPublicKey }, privateKey, 256),
+    crypto.subtle.exportKey('raw', ephemeralPublic),
+    crypto.subtle.exportKey('raw', recipientPublic),
+  ]);
+  const ikm = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  const info = concatBytes(
+    new TextEncoder().encode(KEM_INFO_LABEL),
+    new Uint8Array(epkRaw),
+    new Uint8Array(pkRaw),
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info },
+    ikm,
+    { name: 'AES-KW', length: 256 },
+    false,
+    ['wrapKey', 'unwrapKey'],
+  );
+}
+
+function importRecipientPublicKey(jwk: JsonWebKey): Promise<CryptoKey> {
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || jwk.d !== undefined) {
+    throw new Error('Envelope: recipient key must be a public P-256 EC JWK.');
+  }
+  return crypto.subtle.importKey('jwk', jwk, ECDH_P256, true, []);
+}
+
+/** Wraps the DEK for one recipient with a fresh ephemeral key pair. */
+async function wrapForRecipient(
+  dek: CryptoKey,
+  recipient: RecipientPublicKey,
+): Promise<EnvelopeRecipient> {
+  const recipientKey = await importRecipientPublicKey(recipient.publicKey);
+  const ephemeral = await crypto.subtle.generateKey(ECDH_P256, true, ['deriveBits']);
+  const kek = await deriveKek(
+    ephemeral.privateKey,
+    recipientKey,
+    ephemeral.publicKey,
+    recipientKey,
+  );
+  const [wrapped, epk] = await Promise.all([
+    crypto.subtle.wrapKey('raw', dek, kek, 'AES-KW'),
+    crypto.subtle.exportKey('jwk', ephemeral.publicKey),
+  ]);
+  return {
+    id: recipient.id,
+    epk: { kty: epk.kty!, crv: epk.crv!, x: epk.x!, y: epk.y! },
+    wrappedKey: toBase64(new Uint8Array(wrapped)),
+  };
+}
+
+/**
+ * Recovers the DEK from the envelope with the recipient's private key.
+ * Fails with an OperationError if the key does not match (AES-KW's integrity check).
+ */
+export async function unwrapDataKey(
+  header: EnvelopeHeader,
+  recipientId: string,
+  keyPair: CryptoKeyPair,
+): Promise<CryptoKey> {
+  const entry = header.recipients.find((r) => r.id === recipientId);
+  if (!entry) throw new Error('Envelope: you are not a recipient of this record.');
+  const epk = await importRecipientPublicKey(entry.epk);
+  const kek = await deriveKek(keyPair.privateKey, epk, epk, keyPair.publicKey);
+  // Extractable so the DEK can be re-wrapped for new recipients (wrapKey requires it).
+  return crypto.subtle.unwrapKey(
+    'raw',
+    fromBase64(entry.wrappedKey),
+    kek,
+    'AES-KW',
+    'AES-GCM',
+    true,
+    ['decrypt'],
+  );
+}
+
+/* ── Public API ───────────────────────────────────────────────────── */
+
+/**
+ * Encrypts a file as a stream of 64 KiB AES-256-GCM chunks and wraps the
+ * per-file DEK for every recipient.
+ *
+ * Time: O(n) over the file size. Space: O(chunk) working memory, i.e. a few
+ * 64 KiB buffers in flight plus 32 bytes of digest per chunk (~128 KB at 250 MB),
+ * so the encryption working set stays well under 20 MB at any file size. Each
+ * ciphertext chunk is released into a Blob part as soon as it is produced; the
+ * browser owns that storage (Chromium moves blob data to the browser process and
+ * pages large blobs to disk).
+ *
+ * @param onProgress Called after each chunk with the percentage (0–100) of plaintext encrypted.
+ */
+export async function encryptFileToEnvelope(
+  file: Blob,
+  recipients: RecipientPublicKey[],
+  onProgress?: (percent: number) => void,
+): Promise<EncryptedEnvelope> {
+  if (file.size > MAX_ENVELOPE_FILE_BYTES) throw new Error('File exceeds the 250 MB limit.');
+  if (recipients.length === 0) throw new Error('Envelope: at least one recipient is required.');
+
+  const dek = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+    'encrypt',
+    'decrypt',
+  ]);
+  const noncePrefix = crypto.getRandomValues(new Uint8Array(NONCE_PREFIX_BYTES));
+  const total = chunkCount(file.size, ENVELOPE_CHUNK_BYTES);
+
+  const reader = blobChunkStream(file, ENVELOPE_CHUNK_BYTES)
+    .pipeThrough(chunkEncryptor(dek, noncePrefix, total))
+    .getReader();
+
+  const parts: Blob[] = [];
+  const digests = new Uint8Array(total * 32);
+  for (let i = 0; ; i++) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    digests.set(new Uint8Array(await crypto.subtle.digest('SHA-256', value)), i * 32);
+    parts.push(new Blob([value]));
+    const plaintextDone = Math.min(file.size, (i + 1) * ENVELOPE_CHUNK_BYTES);
+    onProgress?.(file.size === 0 ? 100 : (plaintextDone / file.size) * 100);
+  }
+
+  const wrapped = await Promise.all(recipients.map((r) => wrapForRecipient(dek, r)));
+  return {
+    header: {
+      version: 1,
+      cipher: 'AES-256-GCM-STREAM',
+      kem: 'ECDH-P256+HKDF-SHA256+A256KW',
+      chunkSize: ENVELOPE_CHUNK_BYTES,
+      plaintextSize: file.size,
+      noncePrefix: toBase64(noncePrefix),
+      recipients: wrapped,
+    },
+    body: new Blob(parts),
+    contentHash: toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', digests))),
+  };
+}
+
+/**
+ * Streams the decrypted plaintext of an envelope body. Each chunk is
+ * authenticated before it is emitted. O(chunk) memory.
+ */
+export function decryptEnvelopeBody(
+  body: ReadableStream<Uint8Array>,
+  header: EnvelopeHeader,
+  dek: CryptoKey,
+): ReadableStream<Bytes> {
+  return body
+    .pipeThrough(segmenter(header.chunkSize + GCM_TAG_BYTES))
+    .pipeThrough(
+      chunkDecryptor(
+        dek,
+        fromBase64(header.noncePrefix),
+        chunkCount(header.plaintextSize, header.chunkSize),
+      ),
+    );
+}
+
+/**
+ * Returns a new header with the DEK wrapped for `recipient`, replacing any
+ * existing entry with the same id. The ciphertext body is not touched.
+ */
+export async function addEnvelopeRecipient(
+  header: EnvelopeHeader,
+  dek: CryptoKey,
+  recipient: RecipientPublicKey,
+): Promise<EnvelopeHeader> {
+  const entry = await wrapForRecipient(dek, recipient);
+  return {
+    ...header,
+    recipients: [...header.recipients.filter((r) => r.id !== recipient.id), entry],
+  };
+}
+
+/**
+ * Returns a new header without `recipientId`. The ciphertext body is not touched.
+ * This only stops future key unwraps. A recipient who has already decrypted the
+ * DEK keeps it, so full revocation means re-encrypting under a new DEK.
+ */
+export function removeEnvelopeRecipient(
+  header: EnvelopeHeader,
+  recipientId: string,
+): EnvelopeHeader {
+  const recipients = header.recipients.filter((r) => r.id !== recipientId);
+  if (recipients.length === 0) throw new Error('Envelope: cannot remove the last recipient.');
+  return { ...header, recipients };
+}
+
+/**
+ * Serializes the envelope container:
+ * `"HLE1" (4) ‖ headerLength (4, big-endian) ‖ header JSON (UTF-8) ‖ ciphertext body`.
+ * The body is referenced, not copied.
+ */
+export function serializeEnvelope(header: EnvelopeHeader, body: Blob): Blob {
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const prefix = new Uint8Array(8);
+  prefix.set(new TextEncoder().encode(ENVELOPE_MAGIC), 0);
+  new DataView(prefix.buffer).setUint32(4, json.length, false);
+  return new Blob([prefix, json, body], { type: 'application/octet-stream' });
+}
+
+/** Parses and validates an envelope container. The returned body is a zero-copy Blob slice. */
+export async function parseEnvelope(
+  container: Blob,
+): Promise<{ header: EnvelopeHeader; body: Blob }> {
+  const prefix = new Uint8Array(await container.slice(0, 8).arrayBuffer());
+  if (prefix.length < 8 || new TextDecoder().decode(prefix.subarray(0, 4)) !== ENVELOPE_MAGIC) {
+    throw new Error('Envelope: unrecognised container format.');
+  }
+  const headerLength = new DataView(prefix.buffer).getUint32(4, false);
+  if (headerLength > MAX_HEADER_BYTES || 8 + headerLength > container.size) {
+    throw new Error('Envelope: invalid header length.');
+  }
+  const header = JSON.parse(await container.slice(8, 8 + headerLength).text()) as EnvelopeHeader;
+  const total = chunkCount(header.plaintextSize, header.chunkSize);
+  const body = container.slice(8 + headerLength);
+  if (
+    header.version !== 1 ||
+    header.cipher !== 'AES-256-GCM-STREAM' ||
+    header.kem !== 'ECDH-P256+HKDF-SHA256+A256KW' ||
+    !Number.isSafeInteger(header.chunkSize) ||
+    header.chunkSize <= 0 ||
+    !Number.isSafeInteger(header.plaintextSize) ||
+    header.plaintextSize < 0 ||
+    fromBase64(header.noncePrefix).length !== NONCE_PREFIX_BYTES ||
+    body.size !== header.plaintextSize + total * GCM_TAG_BYTES
+  ) {
+    throw new Error('Envelope: unsupported or corrupted header.');
+  }
+  return { header, body };
+}
+
+/* ── Recipient key pair storage ───────────────────────────────────── */
+
+const KEY_DB = 'heliora-envelope-keys';
+const KEY_STORE = 'ecdh-p256';
+
+function keyStoreRequest<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(KEY_DB, 1);
+    open.onupgradeneeded = () => open.result.createObjectStore(KEY_STORE);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(KEY_STORE, mode);
+      const request = run(tx.objectStore(KEY_STORE));
+      tx.oncomplete = () => {
+        db.close();
+        resolve(request.result);
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(request.error ?? tx.error);
+      };
+    };
+  });
+}
+
+/**
+ * Loads this device's long-term ECDH P-256 key pair for `ownerId`, creating it
+ * on first use. The private key is non-extractable: it is stored in IndexedDB as
+ * a structured-cloned CryptoKey that keeps `extractable: false`, so script can
+ * use it for key agreement but cannot export its key material.
+ */
+export async function loadOrCreateRecipientKeyPair(ownerId: string): Promise<CryptoKeyPair> {
+  const existing = await keyStoreRequest<CryptoKeyPair | undefined>('readonly', (s) =>
+    s.get(ownerId),
+  );
+  if (existing) return existing;
+  const keyPair = await crypto.subtle.generateKey(ECDH_P256, false, ['deriveBits']);
+  try {
+    // `add` (not `put`) so a key pair created concurrently in another tab is never overwritten.
+    await keyStoreRequest('readwrite', (s) => s.add(keyPair, ownerId));
+    return keyPair;
+  } catch {
+    const winner = await keyStoreRequest<CryptoKeyPair | undefined>('readonly', (s) =>
+      s.get(ownerId),
+    );
+    if (!winner) throw new Error('Envelope: could not persist the encryption key pair.');
+    return winner;
+  }
+}
+
+/** Exports the public half of a recipient key pair as a minimal JWK for registration. */
+export async function exportRecipientPublicKey(keyPair: CryptoKeyPair): Promise<JsonWebKey> {
+  const { kty, crv, x, y } = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  return { kty: kty!, crv: crv!, x: x!, y: y! };
 }

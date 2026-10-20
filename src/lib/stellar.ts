@@ -1,4 +1,5 @@
-import { Networks } from '@stellar/stellar-sdk';
+import { BASE_FEE, Networks, TransactionBuilder, rpc, type xdr } from '@stellar/stellar-sdk';
+import { signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
 
@@ -49,6 +50,9 @@ export const STELLAR_CONFIG = {
   horizonUrl: process.env.NEXT_PUBLIC_HORIZON_URL || endpoints[0],
   endpoints,
   passphrase: isMainnet ? Networks.PUBLIC : Networks.TESTNET,
+  // SDF hosts a public Soroban RPC for testnet only; mainnet needs a provider URL.
+  sorobanRpcUrl:
+    process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || (isMainnet ? '' : 'https://soroban-testnet.stellar.org'),
 };
 
 function initializeEndpointHealth() {
@@ -203,4 +207,67 @@ export function useHorizonCall() {
     },
     [toast]
   );
+}
+
+/** Signs a base64 transaction envelope with `address` for `networkPassphrase` and returns the signed envelope. */
+export type TransactionSigner = (
+  envelopeXdr: string,
+  networkPassphrase: string,
+  address: string,
+) => Promise<string>;
+
+/**
+ * {@link TransactionSigner} backed by the Freighter extension through the official
+ * `@stellar/freighter-api` (v6: resolves to `{ signedTxXdr, signerAddress, error? }`).
+ */
+export const freighterSigner: TransactionSigner = async (envelopeXdr, networkPassphrase, address) => {
+  const { signedTxXdr, signerAddress, error } = await signTransaction(envelopeXdr, {
+    networkPassphrase,
+    address,
+  });
+  if (error) throw new Error(error.message || 'Freighter could not sign the transaction.');
+  if (signerAddress !== address) throw new Error('Freighter signed with a different account.');
+  return signedTxXdr;
+};
+
+const SOROBAN_TX_TIMEOUT_SECONDS = 300;
+const SOROBAN_POLL_ATTEMPTS = 30; // ~1 s apart, i.e. about 5 ledgers
+
+/**
+ * Simulates, signs, submits and confirms a single Soroban contract invocation.
+ * `prepareTransaction` runs `simulateTransaction` and attaches the footprint,
+ * authorization entries and resource fee before the wallet signs.
+ * @returns The confirmed transaction hash.
+ */
+export async function invokeSorobanContract(
+  source: string,
+  operation: xdr.Operation,
+  sign: TransactionSigner,
+): Promise<string> {
+  if (!STELLAR_CONFIG.sorobanRpcUrl) throw new Error('NEXT_PUBLIC_SOROBAN_RPC_URL is not configured.');
+  const server = new rpc.Server(STELLAR_CONFIG.sorobanRpcUrl);
+  const tx = new TransactionBuilder(await server.getAccount(source), {
+    fee: BASE_FEE,
+    networkPassphrase: STELLAR_CONFIG.passphrase,
+  })
+    .addOperation(operation)
+    .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+    .build();
+
+  const prepared = await server.prepareTransaction(tx);
+  const signedXdr = await sign(prepared.toXDR(), STELLAR_CONFIG.passphrase, source);
+  const sent = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.passphrase));
+  if (sent.status !== 'PENDING' && sent.status !== 'DUPLICATE') {
+    throw new Error(`Soroban transaction was not accepted (${sent.status}).`);
+  }
+
+  const result = await server.pollTransaction(sent.hash, { attempts: SOROBAN_POLL_ATTEMPTS });
+  if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    throw new Error(
+      result.status === rpc.Api.GetTransactionStatus.FAILED
+        ? `Soroban transaction ${sent.hash} failed.`
+        : `Soroban transaction ${sent.hash} was not confirmed in time.`,
+    );
+  }
+  return sent.hash;
 }

@@ -29,6 +29,7 @@ import {
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { useWalletStore } from '@/store/useWalletStore';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
+import NoShowDisputes from '@/components/disputes/NoShowDisputes';
 import {
   fetchHospitalMetrics,
   fetchStaff,
@@ -148,7 +149,7 @@ function HospitalDashboardContent() {
   const [staffSearch, setStaffSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'staff' | 'admissions' | 'compliance'>('staff');
+  const [activeTab, setActiveTab] = useState<'staff' | 'admissions' | 'compliance' | 'disputes'>('staff');
 
   // Fetch helpers
   const loadMetrics = useCallback(() => {
@@ -385,6 +386,7 @@ function HospitalDashboardContent() {
             { key: 'staff', label: 'Staff Management' },
             { key: 'admissions', label: 'Admissions' },
             { key: 'compliance', label: 'Compliance' },
+            { key: 'disputes', label: 'Disputes' },
           ] as const
         ).map((tab) => (
           <button
@@ -871,6 +873,11 @@ function HospitalDashboardContent() {
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════════════════════════
+          Disputes tab — missed telemedicine consultations
+          ══════════════════════════════════════════════════════════ */}
+      {activeTab === 'disputes' && publicKey && <NoShowDisputes hospitalAddress={publicKey} />}
     </div>
   );
 }

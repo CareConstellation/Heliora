@@ -2,13 +2,46 @@
 
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { encryptFile, exportKey, hashBuffer } from '@/lib/crypto';
-import { uploadEncryptedRecord } from '@/services/api.service';
+import {
+  encryptFileToEnvelope,
+  exportRecipientPublicKey,
+  loadOrCreateRecipientKeyPair,
+  serializeEnvelope,
+  MAX_ENVELOPE_FILE_BYTES,
+  type RecipientPublicKey,
+} from '@/lib/crypto';
+import {
+  fetchEncryptionPublicKey,
+  registerEncryptionPublicKey,
+  uploadEncryptedRecord,
+} from '@/services/api.service';
 import { useToast } from '@/hooks/useToast';
+import { useWalletStore } from '@/store/useWalletStore';
 import type { EncryptedRecord } from '@/types';
 
-const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png'];
-const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png', 'application/dicom'];
+// Browsers often report DICOM scans (CT/MRI) with an empty MIME type, so fall back to the extension.
+const isAccepted = (file: File) => ACCEPTED.includes(file.type) || /\.dcm$/i.test(file.name);
+
+/**
+ * Recipients the DEK is wrapped to: the patient (owner) and the uploader, if different.
+ * The connected wallet uses this device's key pair; any other recipient uses their registered key.
+ */
+async function resolveRecipients(
+  patientAddress: string,
+  uploader: string,
+): Promise<RecipientPublicKey[]> {
+  const ownKey = await exportRecipientPublicKey(await loadOrCreateRecipientKeyPair(uploader));
+  await registerEncryptionPublicKey(uploader, ownKey);
+  const recipients: RecipientPublicKey[] = [{ id: uploader, publicKey: ownKey }];
+  if (patientAddress !== uploader) {
+    recipients.push({
+      id: patientAddress,
+      publicKey: await fetchEncryptionPublicKey(patientAddress),
+    });
+  }
+  return recipients;
+}
 
 interface Props {
   patientAddress: string;
@@ -18,41 +51,61 @@ interface Props {
 export default function MedicalRecordUpload({ patientAddress, onUploaded }: Props) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { publicKey } = useWalletStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<'idle' | 'encrypting' | 'uploading'>('idle');
+  const [percent, setPercent] = useState(0);
 
   const mutation = useMutation({
     mutationFn: async (file: File) => {
       // Validate
-      if (!ACCEPTED.includes(file.type)) {
-        throw new Error('Unsupported file type. Please upload a PDF, JPEG, or PNG.');
+      if (!isAccepted(file)) {
+        throw new Error('Unsupported file type. Please upload a PDF, JPEG, PNG, or DICOM scan.');
       }
-      if (file.size > MAX_BYTES) {
-        throw new Error('File exceeds the 10 MB limit.');
+      if (file.size > MAX_ENVELOPE_FILE_BYTES) {
+        throw new Error('File exceeds the 250 MB limit.');
       }
+      if (!publicKey) throw new Error('Connect your wallet to upload records.');
 
-      // Encrypt
+      // Encrypt as a stream of 64 KiB chunks; the DEK is only ever sent wrapped per recipient.
+      setPercent(0);
       setProgress('encrypting');
-      const { encryptedBuffer, iv, key } = await encryptFile(file);
-      const exportedKey = await exportKey(key);
-      const contentHash = await hashBuffer(encryptedBuffer);
+      const recipients = await resolveRecipients(patientAddress, publicKey);
+      const { header, body, contentHash } = await encryptFileToEnvelope(
+        file,
+        recipients,
+        setPercent,
+      );
 
-      // Build FormData
       setProgress('uploading');
+      const pinnedCid = await uploadCiphertextToIpfs(
+        await createIpfsUploadUrl(),
+        new Blob([encryptedBuffer]),
+      );
+      if (pinnedCid !== cid) {
+        throw new Error(
+          'IPFS returned a CID that does not match the encrypted file. Upload aborted.',
+        );
+      }
+
       const formData = new FormData();
       formData.append('patientAddress', patientAddress);
       formData.append('fileName', file.name);
-      formData.append('fileType', file.type);
+      formData.append('fileType', file.type || 'application/dicom');
       formData.append('contentHash', contentHash);
-      formData.append('encryptedFile', new Blob([encryptedBuffer]), file.name);
-      formData.append('iv', new Blob([iv.buffer as ArrayBuffer]));
-      formData.append('exportedKey', new Blob([exportedKey as ArrayBuffer]));
+      formData.append('encryptedFile', serializeEnvelope(header, body), file.name);
 
-      return uploadEncryptedRecord(formData);
+      const record = await uploadEncryptedRecord(formData);
+      return { record, removed: sanitized.removed };
     },
-    onSuccess: (record) => {
+    onSuccess: ({ record, removed }) => {
       setProgress('idle');
-      toast('Record uploaded and encrypted successfully.', 'success');
+      toast(
+        removed.length > 0
+          ? `Record encrypted and uploaded. Removed: ${removed.join(', ')}.`
+          : 'Record uploaded and encrypted successfully.',
+        'success',
+      );
       // Optimistic: invalidate records query so the list refreshes
       queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
       onUploaded?.(record);
@@ -60,6 +113,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
     },
     onError: (err: Error) => {
       setProgress('idle');
+      if (err instanceof UnsafeFileError) setThreats(err.threats);
       toast(err.message || 'Upload failed. Please try again.', 'error');
       console.error('[MedicalRecordUpload]', err);
     },
@@ -77,13 +131,37 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <p className="text-3xl mb-2">🔒</p>
       <p className="font-medium text-text-1">Upload Encrypted Medical Record</p>
       <p className="text-xs text-text-3 mt-1">
-        PDF, JPEG or PNG · max 10 MB · encrypted before upload
+        PDF, JPEG, PNG or DICOM · max 250 MB · encrypted before upload
       </p>
 
-      {progress !== 'idle' && (
-        <p className="mt-3 text-sm text-green animate-pulse">
-          {progress === 'encrypting' ? 'Encrypting file…' : 'Uploading…'}
-        </p>
+      {progress === 'encrypting' && (
+        <div className="mt-3">
+          <div
+            role="progressbar"
+            aria-label="Encryption progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(percent)}
+            className="h-1.5 w-full overflow-hidden rounded-full bg-surface-inset"
+          >
+            <div className="h-full bg-green transition-[width]" style={{ width: `${percent}%` }} />
+          </div>
+          <p className="mt-2 text-sm text-green">Encrypting file… {Math.floor(percent)}%</p>
+        </div>
+      )}
+      {progress === 'uploading' && (
+        <p className="mt-3 text-sm text-green animate-pulse">Uploading…</p>
+      )}
+
+      {threats.length > 0 && (
+        <div role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-left text-xs text-red-700">
+          <p className="font-semibold">This file was blocked for your safety:</p>
+          <ul className="mt-1 list-disc pl-4">
+            {threats.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <button
@@ -97,7 +175,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.jpg,.jpeg,.png"
+        accept=".pdf,.jpg,.jpeg,.png,.dcm"
         className="hidden"
         onChange={handleChange}
       />
