@@ -77,10 +77,21 @@ export interface PreviewRow extends BulkRecordImportRow {
   _errors: string[];
 }
 
+/**
+ * OWASP CSV Injection: spreadsheet apps run cells starting with these characters
+ * (including full-width variants) as formulas, which can execute commands.
+ */
+const FORMULA_PREFIX = /^[=+\-@\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]/;
+
 export function validateRow(row: BulkRecordImportRow, idx: number): PreviewRow {
   const errors: string[] = [];
   if (!row.date) errors.push('Missing date');
   if (!row.doctorName) errors.push('Missing doctorName');
   if (!row.diagnosis) errors.push('Missing diagnosis');
+  for (const [field, value] of Object.entries(row)) {
+    if (typeof value === 'string' && FORMULA_PREFIX.test(value)) {
+      errors.push(`Possible spreadsheet formula (macro) in ${field}`);
+    }
+  }
   return { ...row, _row: idx + 1, _valid: errors.length === 0, _errors: errors };
 }

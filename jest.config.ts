@@ -12,7 +12,10 @@ const config: Config = {
         },
       },
     ],
+    // @scure/bip39 and @noble/hashes ship ESM only; compile them to CommonJS for Jest.
+    '^.+\\.js$': ['ts-jest', { tsconfig: { allowJs: true } }],
   },
+  transformIgnorePatterns: ['/node_modules/(?!(@scure|@noble)/)'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     // stub Next.js internals & CSS

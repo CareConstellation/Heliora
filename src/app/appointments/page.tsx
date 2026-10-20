@@ -9,11 +9,12 @@ import DoctorSearch from '@/components/appointments/DoctorSearch';
 import SlotPicker from '@/components/appointments/SlotPicker';
 import BookingConfirmation from '@/components/appointments/BookingConfirmation';
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
+import EligibilityProofs from '@/components/appointments/EligibilityProofs';
 import { createAppointment } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { withVideoRoom } from '@/lib/video';
-import type { Doctor, TimeSlot, Appointment } from '@/types';
+import type { Doctor, TimeSlot, Appointment, EligibilityProofToken } from '@/types';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 
 type Step = 'search' | 'slots' | 'form' | 'confirmed';
@@ -29,6 +30,8 @@ function BookingFlow() {
     paymentMethod: 'stellar' as 'stellar' | 'traditional',
   });
   const [confirmed, setConfirmed] = useState<Appointment | null>(null);
+  // Zero-knowledge proof tokens only; credentials are never kept in state.
+  const [eligibilityProofs, setEligibilityProofs] = useState<EligibilityProofToken[]>([]);
 
   // Validation state
   const [slotError, setSlotError] = useState('');
@@ -86,6 +89,7 @@ function BookingFlow() {
         type: form.type,
         notes: form.notes,
         fee: FEE,
+        ...(eligibilityProofs.length > 0 ? { eligibilityProofs } : {}),
       });
     },
     onSuccess: (appt) => {
@@ -113,7 +117,7 @@ function BookingFlow() {
     return (
       <BookingConfirmation
         appointment={confirmed}
-        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setConfirmed(null); setSubmitAttempted(false); }}
+        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setConfirmed(null); setSubmitAttempted(false); setEligibilityProofs([]); }}
       />
     );
   }
@@ -231,6 +235,8 @@ function BookingFlow() {
                 className="w-full rounded-md border border-border bg-surface-inset px-3 py-2 text-sm text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
               />
             </div>
+
+            <EligibilityProofs proofs={eligibilityProofs} onChange={setEligibilityProofs} />
 
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">

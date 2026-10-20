@@ -49,6 +49,9 @@ export const STELLAR_CONFIG = {
   horizonUrl: process.env.NEXT_PUBLIC_HORIZON_URL || endpoints[0],
   endpoints,
   passphrase: isMainnet ? Networks.PUBLIC : Networks.TESTNET,
+  // SDF hosts a public Soroban RPC for testnet only; mainnet needs a provider URL.
+  sorobanRpcUrl:
+    process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || (isMainnet ? '' : 'https://soroban-testnet.stellar.org'),
 };
 
 function initializeEndpointHealth() {

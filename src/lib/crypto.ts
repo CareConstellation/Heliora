@@ -87,3 +87,166 @@ export async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
+
+/**
+ * Decrypt an {@link encryptFile} ciphertext.
+ * @param ciphertext - AES-256-GCM ciphertext with its authentication tag.
+ * @param rawKey - The file's 32-byte raw key.
+ * @param iv - The 12-byte IV used at encryption.
+ * @returns The plaintext; rejects if the ciphertext or tag was altered.
+ */
+export async function decryptFile(
+  ciphertext: ArrayBuffer,
+  rawKey: Uint8Array<ArrayBuffer>,
+  iv: Uint8Array<ArrayBuffer>,
+): Promise<ArrayBuffer> {
+  const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+}
+
+/* ── Password-derived recovery key backup ───────────────────────────── */
+
+/** OWASP Password Storage Cheat Sheet: PBKDF2-HMAC-SHA256 with 600,000 iterations (FIPS-140 compliant). */
+export const RECOVERY_PBKDF2_ITERATIONS = 600_000;
+/** Upper bound accepted when restoring, so a tampered file cannot stall the browser. */
+const MAX_RECOVERY_PBKDF2_ITERATIONS = 10_000_000;
+const RECOVERY_SALT_BYTES = 32;
+const RECOVERY_KEY_BYTES = 32;
+export const RECOVERY_BACKUP_EXTENSION = '.reliora-backup';
+
+/** Contents of a `.reliora-backup` file. Every field except `ciphertext` is authenticated as AES-GCM additional data. */
+export interface RecoveryBackup {
+  format: 'reliora-backup';
+  version: 1;
+  account: string;
+  createdAt: string;
+  kdf: { name: 'PBKDF2'; hash: 'SHA-256'; iterations: number; salt: string };
+  cipher: { name: 'AES-GCM'; iv: string };
+  /** Base64 AES-256-GCM ciphertext of the recovery key (32 bytes + 16-byte tag). */
+  ciphertext: string;
+}
+
+const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+const fromBase64 = (value: string) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+
+/** Generates a high-entropy 256-bit recovery key. */
+export function generateRecoveryKey(): Uint8Array<ArrayBuffer> {
+  return crypto.getRandomValues(new Uint8Array(RECOVERY_KEY_BYTES));
+}
+
+/** PBKDF2-HMAC-SHA256 → non-extractable AES-256-GCM key. The passphrase is NFKD-normalised, as BIP-39 requires. */
+async function deriveBackupKey(
+  passphrase: string,
+  salt: Uint8Array<ArrayBuffer>,
+  iterations: number,
+): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase.normalize('NFKD')),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/** Canonical encoding of the backup header, bound to the ciphertext as AES-GCM additional data. */
+function backupAad({
+  format,
+  version,
+  account,
+  createdAt,
+  kdf,
+  cipher,
+}: RecoveryBackup): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      format,
+      version,
+      account,
+      createdAt,
+      kdf.name,
+      kdf.hash,
+      kdf.iterations,
+      kdf.salt,
+      cipher.name,
+      cipher.iv,
+    ]),
+  );
+}
+
+/**
+ * Encrypts `recoveryKey` under a key derived from `passphrase`.
+ * Time is dominated by the 600,000 PBKDF2 iterations (O(iterations)); space O(1).
+ */
+export async function createRecoveryBackup(
+  recoveryKey: Uint8Array<ArrayBuffer>,
+  passphrase: string,
+  account: string,
+): Promise<RecoveryBackup> {
+  const salt = crypto.getRandomValues(new Uint8Array(RECOVERY_SALT_BYTES));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const backup: RecoveryBackup = {
+    format: 'reliora-backup',
+    version: 1,
+    account,
+    createdAt: new Date().toISOString(),
+    kdf: {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      iterations: RECOVERY_PBKDF2_ITERATIONS,
+      salt: toBase64(salt),
+    },
+    cipher: { name: 'AES-GCM', iv: toBase64(iv) },
+    ciphertext: '',
+  };
+  const key = await deriveBackupKey(passphrase, salt, RECOVERY_PBKDF2_ITERATIONS);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: backupAad(backup) },
+    key,
+    recoveryKey,
+  );
+  return { ...backup, ciphertext: toBase64(new Uint8Array(ciphertext)) };
+}
+
+/**
+ * Decrypts a `.reliora-backup` file and returns the recovery key. Rejects files
+ * that are malformed, below the OWASP iteration minimum, or tampered with. A
+ * wrong passphrase fails AES-GCM authentication.
+ */
+export async function restoreRecoveryKey(
+  fileContents: string,
+  passphrase: string,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const backup = JSON.parse(fileContents) as RecoveryBackup;
+  const { kdf, cipher } = backup;
+  if (
+    backup.format !== 'reliora-backup' ||
+    backup.version !== 1 ||
+    kdf?.name !== 'PBKDF2' ||
+    kdf.hash !== 'SHA-256' ||
+    !Number.isSafeInteger(kdf.iterations) ||
+    kdf.iterations < RECOVERY_PBKDF2_ITERATIONS ||
+    kdf.iterations > MAX_RECOVERY_PBKDF2_ITERATIONS ||
+    cipher?.name !== 'AES-GCM'
+  ) {
+    throw new Error('This is not a valid Heliora recovery backup.');
+  }
+  const key = await deriveBackupKey(passphrase, fromBase64(kdf.salt), kdf.iterations);
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(cipher.iv), additionalData: backupAad(backup) },
+      key,
+      fromBase64(backup.ciphertext),
+    );
+    return new Uint8Array(plaintext);
+  } catch {
+    throw new Error('Incorrect recovery passphrase, or the backup file has been modified.');
+  }
+}

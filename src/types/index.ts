@@ -50,6 +50,17 @@ export interface Appointment {
   txHash?: string;
   videoRoomUrl?: string;
   videoRoomExpiresAt?: string;
+  /** Zero-knowledge eligibility proofs; no birth date or policy data is ever included. */
+  eligibilityProofs?: EligibilityProofToken[];
+}
+
+export type EligibilityKind = 'age18' | 'insurance';
+
+/** A Groth16 proof plus its public signals: the only eligibility data that leaves the browser. */
+export interface EligibilityProofToken {
+  kind: EligibilityKind;
+  proof: import('snarkjs').Groth16Proof;
+  publicSignals: string[];
 }
 
 export interface NewRecordPayload {
@@ -133,4 +144,28 @@ export interface BulkImportResponse {
   failed: number;
   errors: Array<{ row: number; message: string }>;
   records: MedicalRecord[];
+}
+
+/** Poseidon commitments an identity issuer or insurer registered for a patient (decimal field elements). */
+export interface EligibilityCommitments {
+  age18?: string;
+  insurance?: string;
+}
+
+/** Normalised pinning state reported by the backend for a record ciphertext. */
+export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
+
+export interface RecordIpfsStorage {
+  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
+  cid: string;
+  pinStatus: IpfsPinStatus;
+  pinnedAt?: string;
+}
+
+/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
+export interface RecordKeyMaterial {
+  key: string;
+  iv: string;
+  fileName: string;
+  fileType: string;
 }
