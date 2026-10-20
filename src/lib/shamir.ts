@@ -10,7 +10,10 @@ const LOG = new Uint8Array(256);
   for (let i = 0; i < 255; i++) {
     EXP[i] = x;
     LOG[x] = i;
-    x = x & 0x80 ? (x << 1) ^ 0x11b : x << 1;
+    // Generator 0x03 (x XOR xtime(x)), not 0x02 - 2 is not a primitive
+    // element of this field and would leave LOG entries unfilled.
+    const xtime = (x & 0x80 ? (x << 1) ^ 0x11b : x << 1) & 0xff;
+    x = xtime ^ x;
   }
   for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
 })();

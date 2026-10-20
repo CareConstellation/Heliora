@@ -6,6 +6,12 @@
  */
 export function zeroMemory(buffer: ArrayBuffer | Uint8Array): void {
   const view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  crypto.getRandomValues(view);
-  view.fill(0);
+  try {
+    // getRandomValues rejects buffers over 65536 bytes - chunk it.
+    for (let i = 0; i < view.length; i += 65536) {
+      crypto.getRandomValues(view.subarray(i, Math.min(i + 65536, view.length)));
+    }
+  } finally {
+    view.fill(0);
+  }
 }
