@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect, useRef } from 'react';
 import type { Appointment } from '@/types';
 import { CancellationPolicyMatrix } from './CancellationPolicy';
 
@@ -8,25 +9,21 @@ interface Props {
   onDone: () => void;
 }
 
-function buildICS(appt: Appointment): string {
-  const start = new Date(appt.datetime);
-  const end = new Date(start.getTime() + 60 * 60 * 1000);
-  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-  return [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'BEGIN:VEVENT',
-    `DTSTART:${fmt(start)}`,
-    `DTEND:${fmt(end)}`,
-    `SUMMARY:Appointment with Dr. ${appt.doctorName}`,
-    `DESCRIPTION:Type: ${appt.type}`,
-    `UID:${appt.id}@heliora`,
-    'END:VEVENT',
-    'END:VCALENDAR',
-  ].join('\r\n');
-}
-
 export default function BookingConfirmation({ appointment, onDone }: Props) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpen]);
+
   function downloadICS() {
     const blob = new Blob([buildICS(appointment)], { type: 'text/calendar' });
     const url = URL.createObjectURL(blob);
@@ -35,6 +32,7 @@ export default function BookingConfirmation({ appointment, onDone }: Props) {
     a.download = `appointment-${appointment.id}.ics`;
     a.click();
     URL.revokeObjectURL(url);
+    setMenuOpen(false);
   }
 
   return (

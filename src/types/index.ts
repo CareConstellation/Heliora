@@ -34,6 +34,7 @@ export interface TimeSlot {
   id: string;
   datetime: string;
   available: boolean;
+  slotType?: 'regular' | 'emergency' | 'buffer';
 }
 
 export interface Appointment {
@@ -137,6 +138,32 @@ export interface BulkImportResponse {
   records: MedicalRecord[];
 }
 
+export interface EncounterNote {
+  id: string;
+  appointmentId: string;
+  doctorAddress: string;
+  patientAddress: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AnnotationTool = 'pen' | 'arrow' | 'highlighter' | 'text';
+
+export interface AnnotationStroke {
+  id: string;
+  tool: AnnotationTool;
+  points: { x: number; y: number }[];
+  color: string;
+  lineWidth: number;
+  text?: string;
+}
+
+export interface AvailabilityBufferConfig {
+  bufferMinutes: number;
+  minNoticeHours: number;
+  emergencySlotsPerDay: number;
+  emergencySlotIds: string[];
 /* ── SEP-38 Anchor RFQ (https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0038.md) ── */
 
 /** Asset identifier: `stellar:CODE:ISSUER`, `stellar:native` or `iso4217:CCY`. */

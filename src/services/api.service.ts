@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
@@ -287,6 +287,27 @@ export const bulkUpdateStaff = (
 export const bulkImportRecords = (patientAddress: string, records: BulkRecordImportRow[]) =>
   api.post<BulkImportResponse>('/records/batch', { patientAddress, records }).then((r) => r.data);
 
+// Encounter Notes
+
+export const fetchEncounterNote = (appointmentId: string) =>
+  api.get<EncounterNote>(`/appointments/${appointmentId}/notes`).then((r) => r.data);
+
+export const saveEncounterNote = (appointmentId: string, content: string) =>
+  api.post<EncounterNote>(`/appointments/${appointmentId}/notes`, { content }).then((r) => r.data);
+
+// Doctor Availability Configuration
+
+export const fetchAvailabilityConfig = (doctorAddress: string) =>
+  api
+    .get<AvailabilityBufferConfig>('/doctors/availability-config', { params: { doctorAddress } })
+    .then((r) => r.data);
+
+export const updateAvailabilityConfig = (
+  doctorAddress: string,
+  config: AvailabilityBufferConfig,
+) =>
+  api
+    .put<AvailabilityBufferConfig>('/doctors/availability-config', { doctorAddress, ...config })
 // Encrypted record envelopes — recipient keys and header-only recipient updates
 
 /**
