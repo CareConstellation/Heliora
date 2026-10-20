@@ -11,6 +11,7 @@ import BookingConfirmation from '@/components/appointments/BookingConfirmation';
 import AnchorQuote, { isQuoteActive } from '@/components/appointments/AnchorQuote';
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
 import EligibilityProofs from '@/components/appointments/EligibilityProofs';
+import { CancellationPolicyMatrix } from '@/components/appointments/CancellationPolicy';
 import { createAppointment } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
@@ -276,6 +277,8 @@ function BookingFlow() {
                 onQuote={setQuote}
               />
             )}
+
+            <CancellationPolicyMatrix doctorId={doctor.id} />
 
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <p className="text-slate-600">
