@@ -1,6 +1,7 @@
-import axios from 'axios';
+import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation } from '@/types';
+import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
  * Shared axios instance for all API calls.
@@ -30,19 +31,34 @@ export interface ApiError {
   data: unknown;
 }
 
-// Normalize error responses into a consistent shape
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    const normalizedError: ApiError = {
-      message: error.response?.data?.message || error.message || 'An unexpected error occurred',
-      status: error.response?.status || 500,
-      code: error.code || 'UNKNOWN_ERROR',
-      data: error.response?.data || null,
-    };
-    return Promise.reject(normalizedError);
-  }
-);
+// Normalize error responses into a consistent shape.
+// SEP-38/SEP-10 anchors report errors as `{ error }` rather than `{ message }`.
+const normalizeError = (error: AxiosError<{ message?: string; error?: string }>) => {
+  const normalizedError: ApiError = {
+    message:
+      error.response?.data?.message ||
+      error.response?.data?.error ||
+      error.message ||
+      'An unexpected error occurred',
+    status: error.response?.status || 500,
+    code: error.code || 'UNKNOWN_ERROR',
+    data: error.response?.data || null,
+  };
+  return Promise.reject(normalizedError);
+};
+
+api.interceptors.response.use((response) => response, normalizeError);
+
+/**
+ * Axios instance for SEP-38 anchor quote servers. Requests use absolute URLs from
+ * the anchor's stellar.toml. Only network errors and idempotent requests are retried,
+ * so a failed `POST /quote` never creates a second reservation.
+ */
+const anchorApi = axios.create({ headers: { 'Content-Type': 'application/json' } });
+axiosRetry(anchorApi, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
+anchorApi.interceptors.response.use((response) => response, normalizeError);
+
+const bearer = (token?: string) => (token ? { headers: { Authorization: `Bearer ${token}` } } : {});
 
 /** Generic cursor-paginated response envelope used by list endpoints. */
 export interface PaginatedResponse<T> {
@@ -270,3 +286,123 @@ export const bulkUpdateStaff = (
  */
 export const bulkImportRecords = (patientAddress: string, records: BulkRecordImportRow[]) =>
   api.post<BulkImportResponse>('/records/batch', { patientAddress, records }).then((r) => r.data);
+
+// Encrypted record envelopes — recipient keys and header-only recipient updates
+
+/**
+ * Register (or replace) the ECDH P-256 public key that envelopes are wrapped to for a user.
+ * @param address - The user's wallet address.
+ * @param publicKey - Public P-256 JWK (`kty`, `crv`, `x`, `y`).
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const registerEncryptionPublicKey = (address: string, publicKey: JsonWebKey) =>
+  api.put(`/users/${address}/encryption-key`, { publicKey }).then((r) => r.data);
+
+/**
+ * Fetch a user's registered ECDH P-256 public key.
+ * @param address - The user's wallet address.
+ * @returns Public P-256 JWK.
+ * @throws {ApiError} On network failure or non-2xx response (404 if the user has no key).
+ */
+export const fetchEncryptionPublicKey = (address: string) =>
+  api
+    .get<{ publicKey: JsonWebKey }>(`/users/${address}/encryption-key`)
+    .then((r) => r.data.publicKey);
+
+/**
+ * Fetch the JSON envelope header of an encrypted record (without the ciphertext body).
+ * @param recordId - Encrypted record ID.
+ * @returns The record's {@link EnvelopeHeader}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchEnvelopeHeader = (recordId: string) =>
+  api.get<EnvelopeHeader>(`/records/encrypted/${recordId}/envelope-header`).then((r) => r.data);
+
+/**
+ * Add (or replace) one recipient's wrapped key in the envelope header. The ciphertext is not modified.
+ * @param recordId - Encrypted record ID.
+ * @param recipient - The new {@link EnvelopeRecipient} entry.
+ * @returns The updated {@link EnvelopeHeader}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const addEnvelopeRecipientEntry = (recordId: string, recipient: EnvelopeRecipient) =>
+  api
+    .post<EnvelopeHeader>(`/records/encrypted/${recordId}/recipients`, recipient)
+    .then((r) => r.data);
+
+/**
+ * Remove one recipient's wrapped key from the envelope header. The ciphertext is not modified.
+ * @param recordId - Encrypted record ID.
+ * @param recipientId - Wallet address of the recipient to remove.
+ * @returns The updated {@link EnvelopeHeader}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const removeEnvelopeRecipientEntry = (recordId: string, recipientId: string) =>
+  api
+    .delete<EnvelopeHeader>(`/records/encrypted/${recordId}/recipients/${encodeURIComponent(recipientId)}`)
+    .then((r) => r.data);
+
+// SEP-38 Anchor RFQ — https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0038.md
+
+/**
+ * `GET /info`: assets the anchor quotes, with their delivery methods.
+ * @param quoteServer - `ANCHOR_QUOTE_SERVER` from the anchor's stellar.toml.
+ * @param token - Optional SEP-10 JWT; anchors may personalise the response.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchSep38Info = (quoteServer: string, token?: string) =>
+  anchorApi
+    .get<{ assets: Sep38InfoAsset[] }>(`${quoteServer}/info`, bearer(token))
+    .then((r) => r.data.assets);
+
+/**
+ * `GET /prices`: indicative (non-binding) prices of every asset that can be sold to buy `buyAmount` of `buyAsset`.
+ * @param quoteServer - `ANCHOR_QUOTE_SERVER` from the anchor's stellar.toml.
+ * @param buyAsset - Asset the payment settles in, e.g. `stellar:native`.
+ * @param buyAmount - Amount of `buyAsset` required.
+ * @param token - Optional SEP-10 JWT.
+ * @returns The `sell_assets` array of {@link Sep38IndicativePrice}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchSep38Prices = (quoteServer: string, buyAsset: Sep38Asset, buyAmount: string, token?: string) =>
+  anchorApi
+    .get<{ sell_assets: Sep38IndicativePrice[] }>(`${quoteServer}/prices`, {
+      params: { buy_asset: buyAsset, buy_amount: buyAmount },
+      ...bearer(token),
+    })
+    .then((r) => r.data.sell_assets);
+
+/**
+ * `POST /quote`: request a firm quote. The anchor reserves the rate until `expires_at`.
+ * @param quoteServer - `ANCHOR_QUOTE_SERVER` from the anchor's stellar.toml.
+ * @param token - SEP-10 JWT (required by SEP-38 for this endpoint).
+ * @param request - {@link Sep38QuoteRequest}.
+ * @returns The {@link Sep38FirmQuote}.
+ * @throws {ApiError} On network failure or non-2xx response (400 invalid request, 403 bad token).
+ */
+export const createSep38Quote = (quoteServer: string, token: string, request: Sep38QuoteRequest) =>
+  anchorApi.post<Sep38FirmQuote>(`${quoteServer}/quote`, request, bearer(token)).then((r) => r.data);
+
+// Missed-consultation disputes
+
+/**
+ * Fetch a hospital's telemedicine appointments with their Daily call logs, for no-show review.
+ * @param hospitalAddress - Hospital's wallet address.
+ * @returns Array of {@link AppointmentAttendance}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchDisputeCases = (hospitalAddress: string) =>
+  api
+    .get<AppointmentAttendance[]>('/hospital/disputes', { params: { hospitalAddress } })
+    .then((r) => r.data);
+
+/**
+ * Ask the Heliora oracle service to attest an appointment's attendance from the Daily call logs.
+ * @param appointmentId - Appointment ID.
+ * @returns The oracle-signed {@link SignedDisputeAttestation}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const requestDisputeAttestation = (appointmentId: string) =>
+  api
+    .post<SignedDisputeAttestation>('/disputes/attestations', { appointmentId })
+    .then((r) => r.data);
