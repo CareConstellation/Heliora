@@ -78,6 +78,16 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       );
 
       setProgress('uploading');
+      const pinnedCid = await uploadCiphertextToIpfs(
+        await createIpfsUploadUrl(),
+        new Blob([encryptedBuffer]),
+      );
+      if (pinnedCid !== cid) {
+        throw new Error(
+          'IPFS returned a CID that does not match the encrypted file. Upload aborted.',
+        );
+      }
+
       const formData = new FormData();
       formData.append('patientAddress', patientAddress);
       formData.append('fileName', file.name);
@@ -85,11 +95,17 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       formData.append('contentHash', contentHash);
       formData.append('encryptedFile', serializeEnvelope(header, body), file.name);
 
-      return uploadEncryptedRecord(formData);
+      const record = await uploadEncryptedRecord(formData);
+      return { record, removed: sanitized.removed };
     },
-    onSuccess: (record) => {
+    onSuccess: ({ record, removed }) => {
       setProgress('idle');
-      toast('Record uploaded and encrypted successfully.', 'success');
+      toast(
+        removed.length > 0
+          ? `Record encrypted and uploaded. Removed: ${removed.join(', ')}.`
+          : 'Record uploaded and encrypted successfully.',
+        'success',
+      );
       // Optimistic: invalidate records query so the list refreshes
       queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
       onUploaded?.(record);
@@ -97,6 +113,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
     },
     onError: (err: Error) => {
       setProgress('idle');
+      if (err instanceof UnsafeFileError) setThreats(err.threats);
       toast(err.message || 'Upload failed. Please try again.', 'error');
       console.error('[MedicalRecordUpload]', err);
     },
@@ -134,6 +151,17 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       )}
       {progress === 'uploading' && (
         <p className="mt-3 text-sm text-green animate-pulse">Uploading…</p>
+      )}
+
+      {threats.length > 0 && (
+        <div role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-left text-xs text-red-700">
+          <p className="font-semibold">This file was blocked for your safety:</p>
+          <ul className="mt-1 list-disc pl-4">
+            {threats.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <button

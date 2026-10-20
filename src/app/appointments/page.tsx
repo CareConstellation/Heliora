@@ -10,6 +10,7 @@ import SlotPicker from '@/components/appointments/SlotPicker';
 import BookingConfirmation from '@/components/appointments/BookingConfirmation';
 import AnchorQuote, { isQuoteActive } from '@/components/appointments/AnchorQuote';
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
+import EligibilityProofs from '@/components/appointments/EligibilityProofs';
 import { createAppointment } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
@@ -122,7 +123,7 @@ function BookingFlow() {
     return (
       <BookingConfirmation
         appointment={confirmed}
-        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setConfirmed(null); setSubmitAttempted(false); }}
+        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setConfirmed(null); setSubmitAttempted(false); setEligibilityProofs([]); }}
       />
     );
   }
@@ -240,6 +241,8 @@ function BookingFlow() {
                 className="w-full rounded-md border border-border bg-surface-inset px-3 py-2 text-sm text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
               />
             </div>
+
+            <EligibilityProofs proofs={eligibilityProofs} onChange={setEligibilityProofs} />
 
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
