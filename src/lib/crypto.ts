@@ -38,11 +38,136 @@
  * GCM's built-in authentication tag.
  */
 
+import { captureMessage } from '@/lib/sentry';
+
+export class CryptographicFaultError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CryptographicFaultError';
+  }
+}
+
+export interface SecurityContextStatus {
+  isSecureContext: boolean;
+  isIframe: boolean;
+  isSandboxed: boolean;
+}
+
+export function checkSecurityContext(): SecurityContextStatus {
+  const isSecure = typeof window !== 'undefined' ? (window.isSecureContext ?? true) : true;
+  let isIframe = false;
+  let isSandboxed = false;
+
+  if (typeof window !== 'undefined') {
+    try {
+      isIframe = window.self !== window.top;
+    } catch {
+      isIframe = true;
+      isSandboxed = true;
+    }
+  }
+
+  if (!isSecure || isIframe) {
+    const reasons: string[] = [];
+    if (!isSecure) reasons.push('insecure context (non-HTTPS)');
+    if (isIframe) reasons.push('sandboxed or embedded iframe');
+    captureMessage(
+      `Hardware security context warning: entropy source executing in ${reasons.join(', ')}.`,
+      'warning',
+    );
+  }
+
+  return { isSecureContext: isSecure, isIframe, isSandboxed };
+}
+
+export function auditEntropySource(
+  entropyCrypto: Crypto = typeof window !== 'undefined' ? window.crypto : globalThis.crypto,
+): void {
+  if (!entropyCrypto || typeof entropyCrypto.getRandomValues !== 'function') {
+    throw new CryptographicFaultError(
+      'Fatal: Cryptographic entropy source (crypto.getRandomValues) is unavailable.',
+    );
+  }
+
+  checkSecurityContext();
+
+  const SAMPLE_SIZE = 512;
+  const sample1 = new Uint8Array(SAMPLE_SIZE);
+  const sample2 = new Uint8Array(SAMPLE_SIZE);
+
+  entropyCrypto.getRandomValues(sample1);
+  entropyCrypto.getRandomValues(sample2);
+
+  let isIdentical = true;
+  for (let i = 0; i < SAMPLE_SIZE; i++) {
+    if (sample1[i] !== sample2[i]) {
+      isIdentical = false;
+      break;
+    }
+  }
+  if (isIdentical) {
+    throw new CryptographicFaultError(
+      'Fatal cryptographic fault: PRNG returned identical consecutive outputs (stuck or deterministic entropy source).',
+    );
+  }
+
+  let consecutiveCount = 1;
+  let maxConsecutive = 1;
+  for (let i = 1; i < SAMPLE_SIZE; i++) {
+    if (sample1[i] === sample1[i - 1]) {
+      consecutiveCount++;
+      if (consecutiveCount > maxConsecutive) maxConsecutive = consecutiveCount;
+    } else {
+      consecutiveCount = 1;
+    }
+  }
+  if (maxConsecutive >= 16) {
+    throw new CryptographicFaultError(
+      `Fatal cryptographic fault: Repetition Count Test failed with ${maxConsecutive} consecutive identical bytes.`,
+    );
+  }
+
+  let setBits = 0;
+  const byteFrequency = new Map<number, number>();
+  let maxByteFrequency = 0;
+
+  for (let i = 0; i < SAMPLE_SIZE; i++) {
+    const byte = sample1[i]!;
+    let b = byte;
+    while (b > 0) {
+      setBits += b & 1;
+      b >>= 1;
+    }
+    const count = (byteFrequency.get(byte) ?? 0) + 1;
+    byteFrequency.set(byte, count);
+    if (count > maxByteFrequency) maxByteFrequency = count;
+  }
+
+  if (setBits < 1600 || setBits > 2496) {
+    throw new CryptographicFaultError(
+      `Fatal cryptographic fault: Entropy failed monobit distribution test (${setBits}/4096 set bits).`,
+    );
+  }
+
+  if (maxByteFrequency > 30) {
+    throw new CryptographicFaultError(
+      `Fatal cryptographic fault: Adaptive proportion test failed (single byte appeared ${maxByteFrequency} times in 512 bytes).`,
+    );
+  }
+
+  if (byteFrequency.size < 150) {
+    throw new CryptographicFaultError(
+      `Fatal cryptographic fault: Entropy failed symbol diversity test (${byteFrequency.size}/256 unique bytes).`,
+    );
+  }
+}
+
 /**
  * Encrypt a file's contents with a freshly generated AES-256-GCM key.
  * @param file - File to encrypt.
  * @returns The ciphertext (`encryptedBuffer`), the random 96-bit IV used, and
  *   the extractable `CryptoKey` (export via {@link exportKey} if it needs to
+
  *   leave the Web Crypto API, e.g. for upload).
  */
 export async function encryptFile(file: File): Promise<{
@@ -50,6 +175,8 @@ export async function encryptFile(file: File): Promise<{
   iv: Uint8Array;
   key: CryptoKey;
 }> {
+  auditEntropySource();
+
   // extractable: true — required so the key can be exported/uploaded (see module docs above)
   const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
     'encrypt',
@@ -333,6 +460,7 @@ async function wrapForRecipient(
   dek: CryptoKey,
   recipient: RecipientPublicKey,
 ): Promise<EnvelopeRecipient> {
+  auditEntropySource();
   const recipientKey = await importRecipientPublicKey(recipient.publicKey);
   const ephemeral = await crypto.subtle.generateKey(ECDH_P256, true, ['deriveBits']);
   const kek = await deriveKek(
@@ -400,6 +528,7 @@ export async function encryptFileToEnvelope(
   if (file.size > MAX_ENVELOPE_FILE_BYTES) throw new Error('File exceeds the 250 MB limit.');
   if (recipients.length === 0) throw new Error('Envelope: at least one recipient is required.');
 
+  auditEntropySource();
   const dek = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
     'encrypt',
     'decrypt',
@@ -572,6 +701,7 @@ export async function loadOrCreateRecipientKeyPair(ownerId: string): Promise<Cry
     s.get(ownerId),
   );
   if (existing) return existing;
+  auditEntropySource();
   const keyPair = await crypto.subtle.generateKey(ECDH_P256, false, ['deriveBits']);
   try {
     // `add` (not `put`) so a key pair created concurrently in another tab is never overwritten.

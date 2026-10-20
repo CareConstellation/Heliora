@@ -16,7 +16,14 @@ import { createAppointment } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { withVideoRoom } from '@/lib/video';
-import type { Doctor, TimeSlot, Appointment, Sep38FirmQuote } from '@/types';
+import type {
+  Doctor,
+  TimeSlot,
+  Appointment,
+  Sep38FirmQuote,
+  RecurringAppointmentPlan,
+  EligibilityProofToken,
+} from '@/types';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 
 type Step = 'search' | 'slots' | 'form' | 'confirmed';
@@ -26,6 +33,8 @@ function BookingFlow() {
   const [step, setStep] = useState<Step>('search');
   const [doctor, setDoctor] = useState<Doctor | null>(null);
   const [slot, setSlot] = useState<TimeSlot | null>(null);
+  const [recurringPlan, setRecurringPlan] = useState<RecurringAppointmentPlan | null>(null);
+  const [eligibilityProofs, setEligibilityProofs] = useState<EligibilityProofToken[]>([]);
   const [form, setForm] = useState({
     type: 'in-person' as 'in-person' | 'telemedicine',
     notes: '',
@@ -39,22 +48,29 @@ function BookingFlow() {
   const [slotError, setSlotError] = useState('');
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
-  const FEE = 10; // XLM
+  const BASE_FEE = 10; // XLM
+  const effectiveFee = recurringPlan ? recurringPlan.finalBundleFee : BASE_FEE;
 
-  // Derived validation: doctor is guaranteed by the step flow, slot must be chosen
+  // Derived validation: doctor is guaranteed by the step flow, slot must be chosen, recurring slots must be available
   const isFormValid =
-    !!doctor && !!slot && (form.paymentMethod !== 'anchor' || isQuoteActive(quote));
+    !!doctor &&
+    !!slot &&
+    (!recurringPlan || recurringPlan.allAvailable) &&
+    (form.paymentMethod !== 'anchor' || isQuoteActive(quote));
 
   const bookMutation = useMutation({
     mutationFn: async () => {
       if (!doctor || !slot || !publicKey) throw new Error('Missing data');
+      if (recurringPlan && !recurringPlan.allAvailable) {
+        throw new Error('One or more recurring slots are unavailable. Please select another starting slot.');
+      }
       if (form.paymentMethod === 'anchor' && !isQuoteActive(quote)) {
         throw new Error('Your exchange-rate quote has expired. Request a new one.');
       }
 
       if (form.paymentMethod === 'stellar' && window.freighter) {
         const server = new (await import('@stellar/stellar-sdk')).Horizon.Server(
-          STELLAR_CONFIG.horizonUrl,
+          STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
         const account = await server.loadAccount(publicKey);
         const tx = new TransactionBuilder(account, {
@@ -66,7 +82,7 @@ function BookingFlow() {
             Operation.payment({
               destination: doctor.address,
               asset: Asset.native(),
-              amount: String(FEE),
+              amount: String(effectiveFee),
             }),
           )
           .setTimeout(30)
@@ -77,7 +93,7 @@ function BookingFlow() {
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
         });
         const server2 = new (await import('@stellar/stellar-sdk')).Horizon.Server(
-          STELLAR_CONFIG.horizonUrl,
+          STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
         await server2.submitTransaction(
           (await import('@stellar/stellar-sdk')).TransactionBuilder.fromXDR(
@@ -94,7 +110,11 @@ function BookingFlow() {
         datetime: slot.datetime,
         type: form.type,
         notes: form.notes,
-        fee: FEE,
+        fee: effectiveFee,
+        isRecurring: !!recurringPlan,
+        recurrenceRule: recurringPlan?.rrule,
+        recurringPlan: recurringPlan ?? undefined,
+        bundleTotal: recurringPlan?.finalBundleFee,
         ...(form.paymentMethod === 'anchor' && quote ? { quoteId: quote.id } : {}),
       });
     },
@@ -108,6 +128,10 @@ function BookingFlow() {
   function handleSlotContinue() {
     if (!slot) {
       setSlotError('Please select a time slot before continuing.');
+      return;
+    }
+    if (recurringPlan && !recurringPlan.allAvailable) {
+      setSlotError('Cannot proceed: one or more recurring cadence slots are unavailable. Please select another slot.');
       return;
     }
     setSlotError('');
@@ -124,7 +148,7 @@ function BookingFlow() {
     return (
       <BookingConfirmation
         appointment={confirmed}
-        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setConfirmed(null); setSubmitAttempted(false); setEligibilityProofs([]); }}
+        onDone={() => { setStep('search'); setDoctor(null); setSlot(null); setRecurringPlan(null); setConfirmed(null); setSubmitAttempted(false); setEligibilityProofs([]); }}
       />
     );
   }
@@ -161,6 +185,9 @@ function BookingFlow() {
             doctorId={doctor.id}
             selected={slot}
             onSelect={(s) => { setSlot(s); setSlotError(''); }}
+            recurringPlan={recurringPlan}
+            onSelectRecurringPlan={setRecurringPlan}
+            baseFee={BASE_FEE}
           />
           {/* Inline slot validation error */}
           {slotError && (
@@ -260,7 +287,7 @@ function BookingFlow() {
                       onChange={() => setForm((f) => ({ ...f, paymentMethod: m }))}
                     />
                     {m === 'stellar'
-                      ? `Stellar (${FEE} XLM)`
+                      ? `Stellar (${effectiveFee} XLM)`
                       : m === 'anchor'
                         ? 'Other currency'
                         : 'Traditional'}
@@ -272,7 +299,7 @@ function BookingFlow() {
             {form.paymentMethod === 'anchor' && (
               <AnchorQuote
                 buyAsset="stellar:native"
-                buyAmount={String(FEE)}
+                buyAmount={String(effectiveFee)}
                 quote={quote}
                 onQuote={setQuote}
               />
@@ -280,12 +307,32 @@ function BookingFlow() {
 
             <CancellationPolicyMatrix doctorId={doctor.id} />
 
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+            <div className="rounded-lg bg-slate-50 p-3 text-sm space-y-1">
               <p className="text-slate-600">
                 <span className="font-medium">Dr. {doctor.name}</span> ·{' '}
                 {new Date(slot.datetime).toLocaleString()}
               </p>
-              <p className="text-slate-500 text-xs mt-0.5">Fee: {FEE} XLM</p>
+              {recurringPlan ? (
+                <div className="text-xs text-slate-700 space-y-0.5 pt-1 border-t border-slate-200">
+                  <p className="font-semibold text-slate-900">
+                    Recurring Cadence: {recurringPlan.cadence.toUpperCase()} ({recurringPlan.count} Sessions)
+                  </p>
+                  <p className="font-mono text-2xs text-slate-500">{recurringPlan.rrule}</p>
+                  <p className="text-slate-500">
+                    {recurringPlan.count} × {BASE_FEE} XLM = {recurringPlan.totalOriginalFee} XLM
+                    {recurringPlan.bundleDiscountPercent > 0 && (
+                      <span className="text-green font-medium ml-1">
+                        (-{recurringPlan.bundleDiscountPercent}% bundle savings)
+                      </span>
+                    )}
+                  </p>
+                  <p className="font-bold text-slate-900 text-sm pt-0.5">
+                    Bundle Total: {recurringPlan.finalBundleFee} XLM
+                  </p>
+                </div>
+              ) : (
+                <p className="text-slate-500 text-xs mt-0.5">Fee: {BASE_FEE} XLM</p>
+              )}
             </div>
 
             {bookMutation.isError && (
