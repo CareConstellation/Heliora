@@ -8,13 +8,14 @@ import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import DoctorSearch from '@/components/appointments/DoctorSearch';
 import SlotPicker from '@/components/appointments/SlotPicker';
 import BookingConfirmation from '@/components/appointments/BookingConfirmation';
+import AnchorQuote, { isQuoteActive } from '@/components/appointments/AnchorQuote';
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
 import EligibilityProofs from '@/components/appointments/EligibilityProofs';
 import { createAppointment } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { withVideoRoom } from '@/lib/video';
-import type { Doctor, TimeSlot, Appointment, EligibilityProofToken } from '@/types';
+import type { Doctor, TimeSlot, Appointment, Sep38FirmQuote } from '@/types';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 
 type Step = 'search' | 'slots' | 'form' | 'confirmed';
@@ -27,11 +28,11 @@ function BookingFlow() {
   const [form, setForm] = useState({
     type: 'in-person' as 'in-person' | 'telemedicine',
     notes: '',
-    paymentMethod: 'stellar' as 'stellar' | 'traditional',
+    paymentMethod: 'stellar' as 'stellar' | 'anchor' | 'traditional',
   });
   const [confirmed, setConfirmed] = useState<Appointment | null>(null);
-  // Zero-knowledge proof tokens only; credentials are never kept in state.
-  const [eligibilityProofs, setEligibilityProofs] = useState<EligibilityProofToken[]>([]);
+  // Firm SEP-38 quote held across checkout steps until it expires or is used.
+  const [quote, setQuote] = useState<Sep38FirmQuote | null>(null);
 
   // Validation state
   const [slotError, setSlotError] = useState('');
@@ -40,11 +41,15 @@ function BookingFlow() {
   const FEE = 10; // XLM
 
   // Derived validation: doctor is guaranteed by the step flow, slot must be chosen
-  const isFormValid = !!doctor && !!slot;
+  const isFormValid =
+    !!doctor && !!slot && (form.paymentMethod !== 'anchor' || isQuoteActive(quote));
 
   const bookMutation = useMutation({
     mutationFn: async () => {
       if (!doctor || !slot || !publicKey) throw new Error('Missing data');
+      if (form.paymentMethod === 'anchor' && !isQuoteActive(quote)) {
+        throw new Error('Your exchange-rate quote has expired. Request a new one.');
+      }
 
       if (form.paymentMethod === 'stellar' && window.freighter) {
         const server = new (await import('@stellar/stellar-sdk')).Horizon.Server(
@@ -89,10 +94,11 @@ function BookingFlow() {
         type: form.type,
         notes: form.notes,
         fee: FEE,
-        ...(eligibilityProofs.length > 0 ? { eligibilityProofs } : {}),
+        ...(form.paymentMethod === 'anchor' && quote ? { quoteId: quote.id } : {}),
       });
     },
     onSuccess: (appt) => {
+      setQuote(null);
       setConfirmed(withVideoRoom(appt));
       setStep('confirmed');
     },
@@ -243,7 +249,7 @@ function BookingFlow() {
                 Payment Method
               </label>
               <div className="flex gap-3">
-                {(['stellar', 'traditional'] as const).map((m) => (
+                {(['stellar', 'anchor', 'traditional'] as const).map((m) => (
                   <label key={m} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input
                       type="radio"
@@ -252,11 +258,24 @@ function BookingFlow() {
                       checked={form.paymentMethod === m}
                       onChange={() => setForm((f) => ({ ...f, paymentMethod: m }))}
                     />
-                    {m === 'stellar' ? `Stellar (${FEE} XLM)` : 'Traditional'}
+                    {m === 'stellar'
+                      ? `Stellar (${FEE} XLM)`
+                      : m === 'anchor'
+                        ? 'Other currency'
+                        : 'Traditional'}
                   </label>
                 ))}
               </div>
             </div>
+
+            {form.paymentMethod === 'anchor' && (
+              <AnchorQuote
+                buyAsset="stellar:native"
+                buyAmount={String(FEE)}
+                quote={quote}
+                onQuote={setQuote}
+              />
+            )}
 
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <p className="text-slate-600">
