@@ -83,9 +83,38 @@ export interface Appointment {
   recurringPlan?: RecurringAppointmentPlan | undefined;
   bundleTotal?: number | undefined;
   eligibilityProofs?: EligibilityProofToken[] | undefined;
+  intakeQuestionnaire?: EncryptedIntakePayload | undefined;
+  intakeSummary?: PatientIntakeSummary | undefined;
+}
+
+export interface EncryptedIntakePayload {
+  encryptedData: string;
+  iv: string;
+  providerKeyId: string;
+  timestamp: string;
+  previewSummary?: PatientIntakeSummary;
+}
+
+export interface PatientIntakeSummary {
+  chiefComplaint: string;
+  symptomOnset: string;
+  symptoms: string[];
+  allergies: string[];
+  currentMedications?: string;
+  additionalNotes?: string;
+}
+
+export interface IntakeQuestion {
+  id: string;
+  label: string;
+  type: 'text' | 'radio' | 'multiselect';
+  required?: boolean;
+  options?: string[];
+  placeholder?: string;
 }
 
 export type EligibilityKind = 'age18' | 'insurance';
+
 
 export interface EligibilityProofToken {
   kind: EligibilityKind;
