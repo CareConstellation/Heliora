@@ -91,6 +91,47 @@ export async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Worker-offloaded variants (#34)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * Encrypts a file entirely off the main thread via a dedicated Web Worker.
+ * Falls back to the main-thread {@link encryptFile} if Workers are unavailable.
+ *
+ * Time: O(n). Space: O(n) — transferred, not copied.
+ */
+export async function encryptFileOffThread(file: File): Promise<{
+  encryptedBuffer: ArrayBuffer;
+  iv: Uint8Array;
+  key: CryptoKey;
+}> {
+  if (typeof Worker === 'undefined') return encryptFile(file);
+  const { workerEncryptFile } = await import('./cryptoWorkerApi');
+  const fileBuffer = await file.arrayBuffer();
+  const { encryptedBuffer, iv, rawKey } = await workerEncryptFile(fileBuffer);
+  const key = await crypto.subtle.importKey(
+    'raw', rawKey, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'],
+  );
+  return { encryptedBuffer, iv: new Uint8Array(iv), key };
+}
+
+/**
+ * Computes SHA-256 off the main thread. Falls back to main-thread
+ * {@link hashBuffer} if Workers are unavailable.
+ *
+ * Time: O(n). Space: O(n) for the transfer.
+ */
+export async function hashBufferOffThread(buffer: ArrayBuffer): Promise<string> {
+  if (typeof Worker === 'undefined') return hashBuffer(buffer);
+  const { workerHash } = await import('./cryptoWorkerApi');
+  const copy = buffer.slice(0);
+  const digest = await workerHash(copy);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Streaming envelope encryption (#24) + multi-recipient KEM (#25)
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -530,6 +571,67 @@ export async function parseEnvelope(
     throw new Error('Envelope: unsupported or corrupted header.');
   }
   return { header, body };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PQC hybrid envelope encryption (#32)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** PQC envelope recipient entry: wraps the DEK under a hybrid ML-KEM-768 + X25519 KEM. */
+export interface PqcEnvelopeRecipient {
+  id: string;
+  kem: 'ML-KEM-768+X25519';
+  ciphertext: { mlkem: string; x25519: string };
+  wrappedKey: string;
+}
+
+/**
+ * Wrap a DEK for a recipient using the PQC hybrid KEM (ML-KEM-768 + X25519).
+ * The hybrid shared secret is used as an AES-256 key-wrapping key via
+ * HKDF-SHA-256, matching the NIST SP 800-227 combiner pattern.
+ *
+ * Requires `NEXT_PUBLIC_PQC_ENABLED=true`.
+ */
+export async function wrapDekForPqcRecipient(
+  dek: CryptoKey,
+  recipientPublicKey: { mlkem: string; x25519: string },
+  recipientId: string,
+): Promise<PqcEnvelopeRecipient> {
+  const { encapsulate, deserializePublicKey, serializeCiphertext } = await import('./pqcHybridKem');
+  const pk = deserializePublicKey(recipientPublicKey);
+  const { sharedSecret, ciphertext } = await encapsulate(pk);
+
+  const kek = await crypto.subtle.importKey(
+    'raw', sharedSecret as unknown as ArrayBuffer, { name: 'AES-KW', length: 256 }, false, ['wrapKey'],
+  );
+  const wrapped = await crypto.subtle.wrapKey('raw', dek, kek, 'AES-KW');
+
+  return {
+    id: recipientId,
+    kem: 'ML-KEM-768+X25519',
+    ciphertext: serializeCiphertext(ciphertext),
+    wrappedKey: toBase64(new Uint8Array(wrapped)),
+  };
+}
+
+/**
+ * Unwrap a DEK from a PQC envelope recipient entry using the recipient's
+ * hybrid private key.
+ */
+export async function unwrapDekFromPqcRecipient(
+  entry: PqcEnvelopeRecipient,
+  privateKey: { mlkem: Uint8Array; x25519: CryptoKey },
+): Promise<CryptoKey> {
+  const { decapsulate, deserializeCiphertext } = await import('./pqcHybridKem');
+  const ct = deserializeCiphertext(entry.ciphertext);
+  const sharedSecret = await decapsulate(ct, privateKey);
+
+  const kek = await crypto.subtle.importKey(
+    'raw', sharedSecret as unknown as ArrayBuffer, { name: 'AES-KW', length: 256 }, false, ['unwrapKey'],
+  );
+  return crypto.subtle.unwrapKey(
+    'raw', fromBase64(entry.wrappedKey), kek, 'AES-KW', 'AES-GCM', true, ['decrypt'],
+  );
 }
 
 /* ── Recipient key pair storage ───────────────────────────────────── */

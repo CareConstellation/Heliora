@@ -30,6 +30,7 @@ import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { useWalletStore } from '@/store/useWalletStore';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import NoShowDisputes from '@/components/disputes/NoShowDisputes';
+import AuditTrailVerifier from '@/components/audit/AuditTrailVerifier';
 import {
   fetchHospitalMetrics,
   fetchStaff,
@@ -149,7 +150,7 @@ function HospitalDashboardContent() {
   const [staffSearch, setStaffSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'staff' | 'admissions' | 'compliance' | 'disputes'>('staff');
+  const [activeTab, setActiveTab] = useState<'staff' | 'admissions' | 'compliance' | 'disputes' | 'audit'>('staff');
 
   // Fetch helpers
   const loadMetrics = useCallback(() => {
@@ -387,6 +388,7 @@ function HospitalDashboardContent() {
             { key: 'admissions', label: 'Admissions' },
             { key: 'compliance', label: 'Compliance' },
             { key: 'disputes', label: 'Disputes' },
+            { key: 'audit', label: 'Audit Trail' },
           ] as const
         ).map((tab) => (
           <button
@@ -878,6 +880,11 @@ function HospitalDashboardContent() {
           Disputes tab — missed telemedicine consultations
           ══════════════════════════════════════════════════════════ */}
       {activeTab === 'disputes' && publicKey && <NoShowDisputes hospitalAddress={publicKey} />}
+
+      {/* ══════════════════════════════════════════════════════════
+          Audit Trail tab — Merkle inclusion proofs anchored to Stellar
+          ══════════════════════════════════════════════════════════ */}
+      {activeTab === 'audit' && publicKey && <AuditTrailVerifier hospitalAddress={publicKey} />}
     </div>
   );
 }

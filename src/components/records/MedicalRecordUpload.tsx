@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   encryptFileToEnvelope,
@@ -10,6 +10,7 @@ import {
   MAX_ENVELOPE_FILE_BYTES,
   type RecipientPublicKey,
 } from '@/lib/crypto';
+import { terminate as terminateCryptoWorker } from '@/lib/cryptoWorkerApi';
 import {
   fetchEncryptionPublicKey,
   registerEncryptionPublicKey,
@@ -55,6 +56,10 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<'idle' | 'encrypting' | 'uploading'>('idle');
   const [percent, setPercent] = useState(0);
+
+  useEffect(() => {
+    return () => { terminateCryptoWorker(); };
+  }, []);
 
   const mutation = useMutation({
     mutationFn: async (file: File) => {

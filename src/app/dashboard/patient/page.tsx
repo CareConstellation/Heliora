@@ -31,6 +31,7 @@ import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
 import { EmptyRecordState } from '@/components/records/EmptyRecordState';
 import RecoveryBackupWizard from '@/components/recovery/RecoveryBackupWizard';
+import ClinicalTrialEnrollment from '@/components/trials/ClinicalTrialEnrollment';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -559,6 +560,13 @@ export default function PatientDashboard() {
           <h2 className="text-sm font-semibold text-text-1">Emergency Recovery Backup</h2>
           <p className="text-xs text-text-3 mt-0.5 mb-4">Optional · stays on your device</p>
           <RecoveryBackupWizard account={publicKey} />
+        </div>
+      )}
+
+      {/* ── Anonymous clinical trial enrollment (#31) ────────────── */}
+      {publicKey && (
+        <div className="mb-6">
+          <ClinicalTrialEnrollment patientAddress={publicKey} />
         </div>
       )}
 
