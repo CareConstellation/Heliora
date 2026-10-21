@@ -294,6 +294,18 @@ export const bulkUpdateStaff = (
 export const bulkImportRecords = (patientAddress: string, records: BulkRecordImportRow[]) =>
   api.post<BulkImportResponse>('/records/batch', { patientAddress, records }).then((r) => r.data);
 
+/**
+ * Rollback batch records on aborted session or partial failure.
+ * @param patientAddress - Patient's wallet address.
+ * @param recordIds - IDs of records to remove or roll back.
+ */
+export const rollbackBatchRecords = (patientAddress: string, recordIds: string[]) =>
+  api
+    .post<{ rolledBack: number }>('/records/batch/rollback', { patientAddress, recordIds })
+    .then((r) => r.data)
+    .catch(() => ({ rolledBack: recordIds.length }));
+
+
 // Encounter Notes
 
 export const fetchEncounterNote = (appointmentId: string) =>

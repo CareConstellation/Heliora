@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/useToast';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import PreCallDiagnostic from '@/components/ui/PreCallDiagnostic';
 import WaitingRoom from '@/components/appointments/WaitingRoom';
+import DoctorAppointmentDrawer from '@/components/appointments/DoctorAppointmentDrawer';
 import { CancellationEstimateDisplay, calculateCancellationAmounts } from './CancellationPolicy';
 import type { Appointment } from '@/types';
 
@@ -19,6 +20,7 @@ export default function UpcomingAppointments() {
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
   const [diagnosticAppt, setDiagnosticAppt] = useState<Appointment | null>(null);
   const [waitingRoomAppt, setWaitingRoomAppt] = useState<Appointment | null>(null);
+  const [drawerAppt, setDrawerAppt] = useState<Appointment | null>(null);
 
   const { data: appointments, isLoading } = useQuery({
     queryKey: ['patient-appointments', publicKey],
@@ -82,6 +84,15 @@ export default function UpcomingAppointments() {
             </span>
           </div>
           <div className="flex items-center gap-3">
+            {(appt.intakeSummary || appt.intakeQuestionnaire) && (
+              <button
+                type="button"
+                onClick={() => setDrawerAppt(appt)}
+                className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-2 hover:bg-surface-hover hover:text-text-1 transition-colors"
+              >
+                Intake Brief
+              </button>
+            )}
             {appt.type === 'telemedicine' && isVideoLinkActive(appt) && (
               <button
                 type="button"
@@ -101,6 +112,7 @@ export default function UpcomingAppointments() {
           </div>
         </div>
       ))}
+
 
       {appointmentToCancel && (
         <>
@@ -151,6 +163,15 @@ export default function UpcomingAppointments() {
           />
         </div>
       )}
+
+      {/* Patient Intake Brief Drawer */}
+      {drawerAppt && (
+        <DoctorAppointmentDrawer
+          appointment={drawerAppt}
+          onClose={() => setDrawerAppt(null)}
+        />
+      )}
     </div>
   );
 }
+

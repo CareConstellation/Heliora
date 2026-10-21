@@ -11,6 +11,7 @@ import BookingConfirmation from '@/components/appointments/BookingConfirmation';
 import AnchorQuote, { isQuoteActive } from '@/components/appointments/AnchorQuote';
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
 import EligibilityProofs from '@/components/appointments/EligibilityProofs';
+import IntakeQuestionnaire from '@/components/appointments/IntakeQuestionnaire';
 import { CancellationPolicyMatrix } from '@/components/appointments/CancellationPolicy';
 import { createAppointment, fetchSubsidyTier } from '@/services/api.service';
 import FeeInvoice from '@/components/appointments/FeeInvoice';
@@ -25,10 +26,11 @@ import type {
   Sep38FirmQuote,
   RecurringAppointmentPlan,
   EligibilityProofToken,
+  EncryptedIntakePayload,
 } from '@/types';
 import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 
-type Step = 'search' | 'slots' | 'form' | 'confirmed';
+type Step = 'search' | 'slots' | 'intake' | 'form' | 'confirmed';
 
 function BookingFlow() {
   const { publicKey } = useWalletStore();
@@ -37,6 +39,7 @@ function BookingFlow() {
   const [slot, setSlot] = useState<TimeSlot | null>(null);
   const [recurringPlan, setRecurringPlan] = useState<RecurringAppointmentPlan | null>(null);
   const [eligibilityProofs, setEligibilityProofs] = useState<EligibilityProofToken[]>([]);
+  const [encryptedIntake, setEncryptedIntake] = useState<EncryptedIntakePayload | null>(null);
   const [form, setForm] = useState({
     type: 'in-person' as 'in-person' | 'telemedicine',
     notes: '',
@@ -64,16 +67,18 @@ function BookingFlow() {
   const invoice = computeFeeInvoice(listFee, subsidy);
   const effectiveFee = invoice.patientPays;
 
-  // Derived validation: doctor is guaranteed by the step flow, slot must be chosen, recurring slots must be available
+  // Derived validation: doctor is guaranteed by the step flow, slot must be chosen, recurring slots must be available, intake must be completed
   const isFormValid =
     !!doctor &&
     !!slot &&
+    !!encryptedIntake &&
     (!recurringPlan || recurringPlan.allAvailable) &&
     (form.paymentMethod !== 'anchor' || isQuoteActive(quote));
 
   const bookMutation = useMutation({
     mutationFn: async () => {
       if (!doctor || !slot || !publicKey) throw new Error('Missing data');
+      if (!encryptedIntake) throw new Error('Medical intake questionnaire must be completed before booking.');
       if (recurringPlan && !recurringPlan.allAvailable) {
         throw new Error('One or more recurring slots are unavailable. Please select another starting slot.');
       }
@@ -134,6 +139,8 @@ function BookingFlow() {
         recurrenceRule: recurringPlan?.rrule,
         recurringPlan: recurringPlan ?? undefined,
         bundleTotal: recurringPlan?.finalBundleFee,
+        intakeQuestionnaire: encryptedIntake,
+        intakeSummary: encryptedIntake.previewSummary,
         ...(form.paymentMethod === 'anchor' && quote ? { quoteId: quote.id } : {}),
       });
     },
@@ -154,6 +161,11 @@ function BookingFlow() {
       return;
     }
     setSlotError('');
+    setStep('intake');
+  }
+
+  function handleIntakeComplete(payload: EncryptedIntakePayload) {
+    setEncryptedIntake(payload);
     setStep('form');
   }
 
@@ -162,6 +174,7 @@ function BookingFlow() {
     if (!isFormValid) return;
     bookMutation.mutate();
   }
+
 
   if (step === 'confirmed' && confirmed) {
     return (
@@ -176,13 +189,19 @@ function BookingFlow() {
     <div className="space-y-6">
       {/* Step indicator */}
       <div className="flex items-center gap-2 text-xs text-slate-400">
-        {(['search', 'slots', 'form'] as Step[]).map((s, i) => (
+        {(['search', 'slots', 'intake', 'form'] as Step[]).map((s, i) => (
           <span
             key={s}
             className={`flex items-center gap-1 ${step === s ? 'text-green font-medium' : ''}`}
           >
             {i > 0 && <span>›</span>}
-            {s === 'search' ? 'Find Doctor' : s === 'slots' ? 'Pick Slot' : 'Book & Pay'}
+            {s === 'search'
+              ? 'Find Doctor'
+              : s === 'slots'
+                ? 'Pick Slot'
+                : s === 'intake'
+                  ? 'Intake Form'
+                  : 'Book & Pay'}
           </span>
         ))}
       </div>
@@ -216,19 +235,34 @@ function BookingFlow() {
             onClick={handleSlotContinue}
             className="mt-4 w-full rounded-md bg-green py-2 text-sm font-semibold text-[#030D09] hover:bg-green-600"
           >
-            Continue
+            Continue to Intake Questionnaire
           </button>
+        </div>
+      )}
+
+      {step === 'intake' && doctor && slot && (
+        <div>
+          <button onClick={() => setStep('slots')} className="text-xs text-slate-400 hover:text-slate-600 mb-3">
+            ← Back to Slots
+          </button>
+          <IntakeQuestionnaire
+            doctorName={doctor.name}
+            doctorAddress={doctor.address}
+            onComplete={handleIntakeComplete}
+            onCancel={() => setStep('slots')}
+          />
         </div>
       )}
 
       {step === 'form' && doctor && slot && (
         <div>
           <button
-            onClick={() => setStep('slots')}
+            onClick={() => setStep('intake')}
             className="text-xs text-slate-400 hover:text-slate-600 mb-3"
           >
-            ← Back
+            ← Back to Intake
           </button>
+
           <div className="space-y-4">
             {/* Doctor field — read-only, shown as confirmation */}
             <div>
@@ -255,6 +289,31 @@ function BookingFlow() {
                 <p role="alert" className="mt-1 text-xs text-red-600">An appointment slot is required.</p>
               )}
             </div>
+
+            {/* Patient Intake Status */}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Medical Intake Questionnaire <span className="text-red-500">*</span>
+              </label>
+              <div className="rounded-md border border-green/30 bg-green/10 px-3 py-2 text-xs text-text-1 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-green font-bold">✓ Encrypted Submission Attached</span>
+                  {encryptedIntake?.previewSummary?.chiefComplaint && (
+                    <span className="text-text-2 truncate max-w-[200px] sm:max-w-xs">
+                      — {encryptedIntake.previewSummary.chiefComplaint}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setStep('intake')}
+                  className="text-2xs font-semibold text-green hover:underline"
+                >
+                  Edit Answers
+                </button>
+              </div>
+            </div>
+
 
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">

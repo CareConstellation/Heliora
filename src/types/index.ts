@@ -83,9 +83,38 @@ export interface Appointment {
   recurringPlan?: RecurringAppointmentPlan | undefined;
   bundleTotal?: number | undefined;
   eligibilityProofs?: EligibilityProofToken[] | undefined;
+  intakeQuestionnaire?: EncryptedIntakePayload | undefined;
+  intakeSummary?: PatientIntakeSummary | undefined;
+}
+
+export interface EncryptedIntakePayload {
+  encryptedData: string;
+  iv: string;
+  providerKeyId: string;
+  timestamp: string;
+  previewSummary?: PatientIntakeSummary;
+}
+
+export interface PatientIntakeSummary {
+  chiefComplaint: string;
+  symptomOnset: string;
+  symptoms: string[];
+  allergies: string[];
+  currentMedications?: string;
+  additionalNotes?: string;
+}
+
+export interface IntakeQuestion {
+  id: string;
+  label: string;
+  type: 'text' | 'radio' | 'multiselect';
+  required?: boolean;
+  options?: string[];
+  placeholder?: string;
 }
 
 export type EligibilityKind = 'age18' | 'insurance';
+
 
 export interface EligibilityProofToken {
   kind: EligibilityKind;
@@ -99,7 +128,44 @@ export interface NewRecordPayload {
   prescription?: string;
   notes?: string;
   diagnosisCode?: DiagnosisCode;
+  overrideRationale?: string;
 }
+
+export interface MedicationConflict {
+  id: string;
+  type: 'drug_interaction' | 'allergy_conflict';
+  severity: 'severe' | 'moderate' | 'minor';
+  drug: string;
+  conflictingWith: string;
+  title: string;
+  description: string;
+  recommendation?: string;
+}
+
+export interface MedicationCheckResult {
+  hasConflicts: boolean;
+  hasSevereContraindications: boolean;
+  hasAllergyConflicts: boolean;
+  conflicts: MedicationConflict[];
+}
+
+export interface ClinicalNoteAmendment {
+  id: string;
+  recordId: string;
+  version: number;
+  parentHash: string;
+  amendmentHash: string;
+  ledgerTxHash: string;
+  amendingDoctorName: string;
+  amendingDoctorAddress: string;
+  timestamp: string;
+  clinicalJustification: string;
+  amendedField: 'notes' | 'diagnosis' | 'prescription' | 'addendum';
+  previousContent: string;
+  newContent: string;
+}
+
+
 
 export interface EncryptedRecord {
   id: string;
