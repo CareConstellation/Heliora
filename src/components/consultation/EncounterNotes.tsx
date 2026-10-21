@@ -25,16 +25,6 @@ export default function EncounterNotes({ appointmentId, initialDraftContent }: P
     retry: false,
   });
 
-  useEffect(() => {
-    if (existing?.content) {
-      setContent(existing.content);
-      setLastSaved(existing.updatedAt);
-    } else if (initialDraftContent && !content) {
-      setContent(initialDraftContent);
-      debouncedSave(initialDraftContent);
-    }
-  }, [existing, initialDraftContent]);
-
   const saveMutation = useMutation({
     mutationFn: (text: string) => saveEncounterNote(appointmentId, text),
     onSuccess: (data) => {
@@ -51,6 +41,21 @@ export default function EncounterNotes({ appointmentId, initialDraftContent }: P
       if (text.trim()) mutateRef.current?.(text);
     }, AUTOSAVE_DELAY_MS);
   }, []);
+
+  useEffect(() => {
+    if (existing?.content) {
+      setContent(existing.content);
+      setLastSaved(existing.updatedAt);
+    } else if (initialDraftContent) {
+      setContent((prev) => {
+        if (!prev) {
+          debouncedSave(initialDraftContent);
+          return initialDraftContent;
+        }
+        return prev;
+      });
+    }
+  }, [existing, initialDraftContent, debouncedSave]);
 
   useEffect(() => {
     return () => clearTimeout(timerRef.current);

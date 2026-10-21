@@ -273,6 +273,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                     </dd>
                   </div>
                 )}
+              </dl>
               <RecordIpfsStatus recordId={record.id} />
 
               {record.dicomUrl && (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
@@ -21,18 +21,20 @@ export default function ProtectedRoute({ requiredRole, allowedRoles, children }:
   const [verified, setVerified] = useState(false);
   const [resolvedRole, setResolvedRole] = useState<UserRole | null>(null);
 
-  const allowedList = Array.isArray(requiredRole)
-    ? requiredRole
-    : allowedRoles
-      ? allowedRoles
-      : requiredRole
-        ? [requiredRole]
-        : [];
-
-  const isRoleAllowed = (target: UserRole | null): boolean => {
-    if (allowedList.length === 0) return true;
-    return !!target && allowedList.includes(target);
-  };
+  const isRoleAllowed = useCallback(
+    (target: UserRole | null): boolean => {
+      const allowedList = Array.isArray(requiredRole)
+        ? requiredRole
+        : allowedRoles
+          ? allowedRoles
+          : requiredRole
+            ? [requiredRole]
+            : [];
+      if (allowedList.length === 0) return true;
+      return !!target && allowedList.includes(target);
+    },
+    [requiredRole, allowedRoles],
+  );
 
   useEffect(() => {
     if (!publicKey) {
@@ -86,7 +88,7 @@ export default function ProtectedRoute({ requiredRole, allowedRoles, children }:
     return () => {
       cancelled = true;
     };
-  }, [publicKey, role, roleSignature, requiredRole, router, setRoleTrustLevel]);
+  }, [publicKey, role, roleSignature, requiredRole, router, setRoleTrustLevel, isRoleAllowed]);
 
   if (!publicKey || !verified) return null;
   if (!isRoleAllowed(resolvedRole)) return null;

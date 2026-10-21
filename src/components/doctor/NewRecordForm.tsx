@@ -194,7 +194,7 @@ export default function NewRecordForm({
         diagnosis: form.diagnosis,
         prescription: form.prescription,
         notes: notesContent,
-        overrideRationale: form.overrideRationale.trim() || undefined,
+        ...(form.overrideRationale.trim() ? { overrideRationale: form.overrideRationale.trim() } : {}),
         ...(dx ? { diagnosisCode: dx } : {}),
       });
 
