@@ -440,3 +440,41 @@ export interface StepAwayContact {
   target: string;
 }
 
+/* ── Video Call Transcription & Clinical Notes (#64) ───────────────── */
+
+export interface TranscriptionConsentState {
+  doctorConsented: boolean;
+  patientConsented: boolean;
+  isMutualConsent: boolean;
+  timestamp?: number | undefined;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  speaker: 'doctor' | 'patient';
+  text: string;
+  isFinal: boolean;
+  timestamp: number;
+}
+
+export interface ClinicalDraftNote {
+  appointmentId: string;
+  patientAddress: string;
+  generatedAt: string;
+  diagnosis: string;
+  notes: string;
+  prescription: string;
+  rawTranscripts: TranscriptSegment[];
+}
+
+/* ── WebRTC Automated Reconnection & State Recovery (#66) ─────────── */
+
+export type ReconnectionState = 'connected' | 'reconnecting' | 'failed';
+
+export interface ReconnectionStatus {
+  state: ReconnectionState;
+  remainingSeconds: number;
+  attemptCount: number;
+  message?: string | undefined;
+}
+

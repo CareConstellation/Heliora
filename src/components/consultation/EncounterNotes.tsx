@@ -6,11 +6,12 @@ import { fetchEncounterNote, saveEncounterNote } from '@/services/api.service';
 
 interface Props {
   appointmentId: string;
+  initialDraftContent?: string | undefined;
 }
 
 const AUTOSAVE_DELAY_MS = 2000;
 
-export default function EncounterNotes({ appointmentId }: Props) {
+export default function EncounterNotes({ appointmentId, initialDraftContent }: Props) {
   const queryClient = useQueryClient();
   const [content, setContent] = useState('');
   const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -28,8 +29,11 @@ export default function EncounterNotes({ appointmentId }: Props) {
     if (existing?.content) {
       setContent(existing.content);
       setLastSaved(existing.updatedAt);
+    } else if (initialDraftContent && !content) {
+      setContent(initialDraftContent);
+      debouncedSave(initialDraftContent);
     }
-  }, [existing]);
+  }, [existing, initialDraftContent]);
 
   const saveMutation = useMutation({
     mutationFn: (text: string) => saveEncounterNote(appointmentId, text),
