@@ -99,7 +99,27 @@ export interface NewRecordPayload {
   prescription?: string;
   notes?: string;
   diagnosisCode?: DiagnosisCode;
+  overrideRationale?: string;
 }
+
+export interface MedicationConflict {
+  id: string;
+  type: 'drug_interaction' | 'allergy_conflict';
+  severity: 'severe' | 'moderate' | 'minor';
+  drug: string;
+  conflictingWith: string;
+  title: string;
+  description: string;
+  recommendation?: string;
+}
+
+export interface MedicationCheckResult {
+  hasConflicts: boolean;
+  hasSevereContraindications: boolean;
+  hasAllergyConflicts: boolean;
+  conflicts: MedicationConflict[];
+}
+
 
 export interface EncryptedRecord {
   id: string;
