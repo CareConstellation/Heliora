@@ -14,7 +14,7 @@
     "prepare": "husky || true"
   },
   "dependencies": {
-    "@ledgerhq/hw-app-str": "^0.4.0",
+    "@ledgerhq/hw-app-str": "^6.27.0",
     "@ledgerhq/hw-transport-webhid": "^6.27.0",
     "@ledgerhq/hw-transport-webusb": "^6.27.0",
     "@scure/bip39": "^2.4.0",
