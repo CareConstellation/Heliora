@@ -6,7 +6,12 @@ interface WalletState {
   publicKey: string | null;
   role: UserRole | null;
   network: string;
-  setWallet: (publicKey: string, role: UserRole) => void;
+  nativeBalance: number | null;
+  sequence: number | null;
+  lastBalanceUpdate: number | null;
+  walletType: 'freighter' | 'ledger' | null;
+  setWallet: (publicKey: string, role: UserRole, walletType?: 'freighter' | 'ledger') => void;
+  setBalance: (balance: number, sequence: number) => void;
   disconnect: () => void;
 }
 
@@ -16,8 +21,22 @@ export const useWalletStore = create<WalletState>()(
       publicKey: null,
       role: null,
       network: process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet',
-      setWallet: (publicKey, role) => set({ publicKey, role }),
-      disconnect: () => set({ publicKey: null, role: null }),
+      nativeBalance: null,
+      sequence: null,
+      lastBalanceUpdate: null,
+      walletType: null,
+      setWallet: (publicKey, role, walletType = 'freighter') =>
+        set({ publicKey, role, walletType }),
+      setBalance: (balance, sequence) =>
+        set({ nativeBalance: balance, sequence, lastBalanceUpdate: Date.now() }),
+      disconnect: () =>
+        set({
+          publicKey: null,
+          role: null,
+          nativeBalance: null,
+          sequence: null,
+          walletType: null,
+        }),
     }),
     { name: 'wallet-store' },
   ),

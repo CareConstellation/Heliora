@@ -6,9 +6,13 @@ interface AuthState {
   walletAddress: string | null;
   role: UserRole | null;
   isLoading: boolean;
+  roleSignature: string | null;
+  roleTrustLevel: 'verified' | 'unverified' | 'tampered';
   setWalletAddress: (address: string | null) => void;
-  setRole: (role: UserRole | null) => void;
+  setRole: (role: UserRole | null, signature?: string) => void;
   setIsLoading: (loading: boolean) => void;
+  setRoleSignature: (signature: string | null) => void;
+  setRoleTrustLevel: (level: 'verified' | 'unverified' | 'tampered') => void;
   clearAuth: () => void;
 }
 
@@ -18,17 +22,28 @@ export const useAuthStore = create<AuthState>()(
       walletAddress: null,
       role: null,
       isLoading: false,
+      roleSignature: null,
+      roleTrustLevel: 'unverified',
       setWalletAddress: (address) => set({ walletAddress: address }),
-      setRole: (role) => set({ role }),
+      setRole: (role, signature) => set({ role, roleSignature: signature || null }),
       setIsLoading: (isLoading) => set({ isLoading }),
-      clearAuth: () => set({ walletAddress: null, role: null, isLoading: false }),
+      setRoleSignature: (signature) => set({ roleSignature: signature }),
+      setRoleTrustLevel: (level) => set({ roleTrustLevel: level }),
+      clearAuth: () =>
+        set({
+          walletAddress: null,
+          role: null,
+          isLoading: false,
+          roleSignature: null,
+          roleTrustLevel: 'unverified',
+        }),
     }),
     {
       name: 'heliora-auth',
-      // Only persist address and role, not loading state
       partialize: (state) => ({
         walletAddress: state.walletAddress,
         role: state.role,
+        roleSignature: state.roleSignature,
       }),
     },
   ),
