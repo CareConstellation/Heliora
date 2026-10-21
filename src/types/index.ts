@@ -15,6 +15,30 @@ export interface MedicalRecord {
   prescription?: string;
   notes?: string;
   patientAddress: string;
+  /** Specialty of the treating provider, used as a search facet. */
+  providerSpecialty?: string;
+  /** Record classification (e.g. "lab", "imaging"), used as a search facet. */
+  classification?: string;
+  /** Standard code for the diagnosis, when the doctor picked one. */
+  diagnosisCode?: DiagnosisCode;
+  /** URL of a `.dcm` imaging study attached to this record. */
+  dicomUrl?: string;
+}
+
+/** Standard diagnostic code, stored next to the human-readable diagnosis. */
+export interface DiagnosisCode {
+  code: string;
+  system: 'ICD-10-CM' | 'SNOMED-CT';
+  display: string;
+}
+
+/** Verified subsidy tier returned by the backend / contract for a patient. */
+export interface SubsidyTier {
+  tier: string;
+  /** Percentage of the base fee covered by the grantor, 0–100. */
+  discountPercent: number;
+  /** Institution funding the subsidy, shown on the invoice. */
+  grantor?: string;
 }
 
 export interface ShareToken {
@@ -74,6 +98,7 @@ export interface NewRecordPayload {
   diagnosis: string;
   prescription?: string;
   notes?: string;
+  diagnosisCode?: DiagnosisCode;
 }
 
 export interface EncryptedRecord {

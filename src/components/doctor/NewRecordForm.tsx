@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createRecord } from '@/services/api.service';
+import DiagnosisCodeInput from './DiagnosisCodeInput';
+import type { DiagnosisCode } from '@/types';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
@@ -16,10 +18,15 @@ export default function NewRecordForm({ patientAddress, onSuccess }: Props) {
   const { publicKey } = useWalletStore();
   const queryClient = useQueryClient();
   const [form, setForm] = useState({ diagnosis: '', prescription: '', notes: '' });
+  const [dx, setDx] = useState<DiagnosisCode | null>(null);
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const record = await createRecord({ patientAddress, ...form });
+      const record = await createRecord({
+        patientAddress,
+        ...form,
+        ...(dx ? { diagnosisCode: dx } : {}),
+      });
 
       // Build a minimal Stellar tx as on-chain proof
       if (window.freighter && publicKey) {
@@ -63,6 +70,7 @@ export default function NewRecordForm({ patientAddress, onSuccess }: Props) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
       setForm({ diagnosis: '', prescription: '', notes: '' });
+      setDx(null);
       onSuccess();
     },
   });
@@ -77,11 +85,21 @@ export default function NewRecordForm({ patientAddress, onSuccess }: Props) {
     >
       <div>
         <label className="block text-xs font-medium text-text-2 mb-1">Diagnosis *</label>
+        <DiagnosisCodeInput
+          value={dx}
+          onChange={(next) => {
+            setDx(next);
+            if (next) setForm((f) => ({ ...f, diagnosis: next.display }));
+          }}
+        />
         <input
           required
           value={form.diagnosis}
-          onChange={(e) => setForm((f) => ({ ...f, diagnosis: e.target.value }))}
-          className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
+          onChange={(e) => {
+            setDx(null); // free-text edits no longer match the picked code
+            setForm((f) => ({ ...f, diagnosis: e.target.value }));
+          }}
+          className="mt-2 w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
         />
       </div>
       <div>

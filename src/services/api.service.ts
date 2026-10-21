@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
@@ -202,6 +202,13 @@ export const updateAppointmentStatus = (id: string, status: Appointment['status'
  */
 export const createRecord = (payload: NewRecordPayload) =>
   api.post<MedicalRecord>('/records', payload).then((r) => r.data);
+
+/**
+ * Fetch the patient's verified subsidy tier (sliding-scale discount).
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchSubsidyTier = (patientAddress: string) =>
+  api.get<SubsidyTier>(`/patients/${patientAddress}/subsidy`).then((r) => r.data);
 
 export default api;
 

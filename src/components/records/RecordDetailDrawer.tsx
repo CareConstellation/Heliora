@@ -2,6 +2,7 @@
 
 import type { MedicalRecord } from '@/types';
 import RecordIpfsStatus from './RecordIpfsStatus';
+import DicomViewer from './DicomViewer';
 
 interface Props {
   record: MedicalRecord;
@@ -61,6 +62,13 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
           )}
           <RecordIpfsStatus recordId={record.id} />
         </dl>
+
+        {record.dicomUrl && (
+          <section className="mt-6">
+            <h3 className="mb-2 text-sm font-semibold text-slate-900">Imaging</h3>
+            <DicomViewer src={record.dicomUrl} />
+          </section>
+        )}
       </div>
     </div>
   );

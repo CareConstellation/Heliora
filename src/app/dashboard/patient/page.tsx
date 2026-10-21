@@ -2,6 +2,7 @@
 
 export const dynamic = 'force-dynamic';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchRecordsPaginated } from '@/services/api.service';
@@ -29,6 +30,9 @@ import {
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
+import RecordSearch from '@/components/records/RecordSearch';
+import { useRecordSearch } from '@/hooks/useRecordSearch';
+import type { MedicalRecord } from '@/types';
 import { EmptyRecordState } from '@/components/records/EmptyRecordState';
 import RecoveryBackupWizard from '@/components/recovery/RecoveryBackupWizard';
 import ClinicalTrialEnrollment from '@/components/trials/ClinicalTrialEnrollment';
@@ -247,20 +251,24 @@ export default function PatientDashboard() {
     enabled: !!publicKey,
   });
 
+  const allRecords = useMemo<MedicalRecord[]>(
+    () => recordsData?.pages.flatMap((p) => p.data) ?? [],
+    [recordsData],
+  );
+  const search = useRecordSearch(allRecords);
+
   const records = recordsData
-    ? recordsData.pages
-        .flatMap((p) => p.data)
-        .map((r) => ({
-          id: r.id,
-          type: r.diagnosis,
-          doctor: r.doctorName,
-          date: new Date(r.date).toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          }),
-          status: 'verified' as const,
-        }))
+    ? search.results.map((r) => ({
+        id: r.id,
+        type: r.diagnosis,
+        doctor: r.doctorName,
+        date: new Date(r.date).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+        status: 'verified' as const,
+      }))
     : fallbackRecords;
 
   const totalRecords = recordsData?.pages[0]?.total ?? records.length;
@@ -361,6 +369,8 @@ export default function PatientDashboard() {
               View all <ChevronRight className="w-3.5 h-3.5" />
             </Link>
           </div>
+
+          {recordsData && <RecordSearch search={search} />}
 
           {recordsLoading ? (
             <DashboardSkeleton rows={4} />

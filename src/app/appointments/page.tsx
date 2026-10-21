@@ -3,7 +3,7 @@
 export const dynamic = 'force-dynamic';
 
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import DoctorSearch from '@/components/appointments/DoctorSearch';
 import SlotPicker from '@/components/appointments/SlotPicker';
@@ -12,7 +12,9 @@ import AnchorQuote, { isQuoteActive } from '@/components/appointments/AnchorQuot
 import UpcomingAppointments from '@/components/appointments/UpcomingAppointments';
 import EligibilityProofs from '@/components/appointments/EligibilityProofs';
 import { CancellationPolicyMatrix } from '@/components/appointments/CancellationPolicy';
-import { createAppointment } from '@/services/api.service';
+import { createAppointment, fetchSubsidyTier } from '@/services/api.service';
+import FeeInvoice from '@/components/appointments/FeeInvoice';
+import { computeFeeInvoice } from '@/lib/feeSubsidy';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { withVideoRoom } from '@/lib/video';
@@ -48,8 +50,19 @@ function BookingFlow() {
   const [slotError, setSlotError] = useState('');
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
+  const queryClient = useQueryClient();
+  const subsidyKey = ['subsidy-tier', publicKey];
+  const { data: subsidy } = useQuery({
+    queryKey: subsidyKey,
+    queryFn: () => fetchSubsidyTier(publicKey!),
+    enabled: !!publicKey,
+    retry: false,
+  });
+
   const BASE_FEE = 10; // XLM
-  const effectiveFee = recurringPlan ? recurringPlan.finalBundleFee : BASE_FEE;
+  const listFee = recurringPlan ? recurringPlan.finalBundleFee : BASE_FEE;
+  const invoice = computeFeeInvoice(listFee, subsidy);
+  const effectiveFee = invoice.patientPays;
 
   // Derived validation: doctor is guaranteed by the step flow, slot must be chosen, recurring slots must be available
   const isFormValid =
@@ -68,7 +81,13 @@ function BookingFlow() {
         throw new Error('Your exchange-rate quote has expired. Request a new one.');
       }
 
-      if (form.paymentMethod === 'stellar' && window.freighter) {
+      // Re-verify the subsidy tier right before the fee is locked, so a stale tier can't be charged.
+      const freshSubsidy = await queryClient
+        .fetchQuery({ queryKey: subsidyKey, queryFn: () => fetchSubsidyTier(publicKey), staleTime: 0 })
+        .catch(() => subsidy);
+      const fee = computeFeeInvoice(listFee, freshSubsidy).patientPays;
+
+      if (form.paymentMethod === 'stellar' && window.freighter && fee > 0) {
         const server = new (await import('@stellar/stellar-sdk')).Horizon.Server(
           STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
@@ -82,7 +101,7 @@ function BookingFlow() {
             Operation.payment({
               destination: doctor.address,
               asset: Asset.native(),
-              amount: String(effectiveFee),
+              amount: String(fee),
             }),
           )
           .setTimeout(30)
@@ -110,7 +129,7 @@ function BookingFlow() {
         datetime: slot.datetime,
         type: form.type,
         notes: form.notes,
-        fee: effectiveFee,
+        fee,
         isRecurring: !!recurringPlan,
         recurrenceRule: recurringPlan?.rrule,
         recurringPlan: recurringPlan ?? undefined,
@@ -333,6 +352,7 @@ function BookingFlow() {
               ) : (
                 <p className="text-slate-500 text-xs mt-0.5">Fee: {BASE_FEE} XLM</p>
               )}
+              <FeeInvoice invoice={invoice} />
             </div>
 
             {bookMutation.isError && (
