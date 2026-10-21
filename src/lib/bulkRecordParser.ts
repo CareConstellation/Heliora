@@ -1,4 +1,5 @@
-import type { BulkRecordImportRow } from '@/types';
+import type { BulkRecordImportRow, MedicalRecord } from '@/types';
+import { validateFHIRBundle } from '@/lib/fhirValidator';
 
 export function parseCSV(text: string): BulkRecordImportRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
@@ -94,4 +95,26 @@ export function validateRow(row: BulkRecordImportRow, idx: number): PreviewRow {
     }
   }
   return { ...row, _row: idx + 1, _valid: errors.length === 0, _errors: errors };
+}
+
+export function validateFHIRJSON(json: Record<string, unknown>): { valid: boolean; errors: Array<{ field: string; message: string; lineNumber?: number }> } {
+  try {
+    const errors = validateFHIRBundle(json);
+    return { valid: errors.length === 0, errors };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid FHIR JSON';
+    return { valid: false, errors: [{ field: 'root', message }] };
+  }
+}
+
+export function rowsToMedicalRecords(rows: BulkRecordImportRow[], patientAddress: string): MedicalRecord[] {
+  return rows.map((row, idx) => ({
+    id: `record-${Date.now()}-${idx}`,
+    date: row.date,
+    doctorName: row.doctorName,
+    diagnosis: row.diagnosis,
+    prescription: row.prescription,
+    notes: row.notes,
+    patientAddress,
+  }));
 }
