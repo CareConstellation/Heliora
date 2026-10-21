@@ -48,11 +48,25 @@ export interface Appointment {
   notes?: string;
   status: 'pending' | 'confirmed' | 'cancelled' | 'completed';
   fee: number;
-  txHash?: string;
-  videoRoomUrl?: string;
-  videoRoomExpiresAt?: string;
+  txHash?: string | undefined;
+  videoRoomUrl?: string | undefined;
+  videoRoomExpiresAt?: string | undefined;
   /** SEP-38 firm quote locked in at checkout when paying through an anchor. */
-  quoteId?: string;
+  quoteId?: string | undefined;
+  /** RFC 5545 recurrence rule string, e.g. RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=4 */
+  recurrenceRule?: string | undefined;
+  isRecurring?: boolean | undefined;
+  recurringPlan?: RecurringAppointmentPlan | undefined;
+  bundleTotal?: number | undefined;
+  eligibilityProofs?: EligibilityProofToken[] | undefined;
+}
+
+export type EligibilityKind = 'age18' | 'insurance';
+
+export interface EligibilityProofToken {
+  kind: EligibilityKind;
+  proof: unknown;
+  publicSignals: string[];
 }
 
 export interface NewRecordPayload {
@@ -164,6 +178,7 @@ export interface AvailabilityBufferConfig {
   minNoticeHours: number;
   emergencySlotsPerDay: number;
   emergencySlotIds: string[];
+}
 /* ── SEP-38 Anchor RFQ (https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0038.md) ── */
 
 /** Asset identifier: `stellar:CODE:ISSUER`, `stellar:native` or `iso4217:CCY`. */
@@ -285,3 +300,52 @@ export interface CancellationTier {
   refundPercent: number;
   forfeitPercent: number;
 }
+
+/* Recurring appointments and multi-slot cadence engine (#45) */
+
+export type RecurrenceCadence = 'none' | 'weekly' | 'bi-weekly';
+
+export interface TargetSlotOccurrence {
+  occurrenceIndex: number;
+  datetime: string;
+  matchedSlot?: TimeSlot | undefined;
+  isAvailable: boolean;
+  conflictReason?: string | undefined;
+}
+
+export interface RecurringAppointmentPlan {
+  rrule: string;
+  cadence: RecurrenceCadence;
+  interval: number;
+  count: number;
+  occurrences: TargetSlotOccurrence[];
+  allAvailable: boolean;
+  baseFeePerSlot: number;
+  totalOriginalFee: number;
+  bundleDiscountPercent: number;
+  finalBundleFee: number;
+}
+
+/* Dynamic waiting room queue management (#49) */
+
+export type QueueStatusStage =
+  | 'waiting'
+  | 'doctor_reviewing_charts'
+  | 'doctor_delayed'
+  | 'doctor_entering'
+  | 'ready';
+
+export interface QueuePositionUpdate {
+  appointmentId: string;
+  queuePosition: number;
+  estimatedWaitMinutes: number;
+  statusMessage: string;
+  statusStage: QueueStatusStage;
+  doctorStatus: 'in_consultation' | 'reviewing_charts' | 'entering_room' | 'ready';
+}
+
+export interface StepAwayContact {
+  type: 'sms' | 'email';
+  target: string;
+}
+

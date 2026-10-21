@@ -7,6 +7,8 @@ import { useWalletStore } from '@/store/useWalletStore';
 import { isVideoLinkActive } from '@/lib/video';
 import { useToast } from '@/hooks/useToast';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import PreCallDiagnostic from '@/components/ui/PreCallDiagnostic';
+import WaitingRoom from '@/components/appointments/WaitingRoom';
 import { CancellationEstimateDisplay, calculateCancellationAmounts } from './CancellationPolicy';
 import type { Appointment } from '@/types';
 
@@ -15,6 +17,8 @@ export default function UpcomingAppointments() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
+  const [diagnosticAppt, setDiagnosticAppt] = useState<Appointment | null>(null);
+  const [waitingRoomAppt, setWaitingRoomAppt] = useState<Appointment | null>(null);
 
   const { data: appointments, isLoading } = useQuery({
     queryKey: ['patient-appointments', publicKey],
@@ -79,14 +83,13 @@ export default function UpcomingAppointments() {
           </div>
           <div className="flex items-center gap-3">
             {appt.type === 'telemedicine' && isVideoLinkActive(appt) && (
-              <a
-                href={appt.videoRoomUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs font-medium text-blue-600 hover:underline"
+              <button
+                type="button"
+                onClick={() => setDiagnosticAppt(appt)}
+                className="rounded-md bg-green/10 border border-green/30 px-2.5 py-1 text-xs font-medium text-green hover:bg-green/20 transition-colors"
               >
                 Join Video Call
-              </a>
+              </button>
             )}
             <button
               onClick={() => setAppointmentToCancel(appt)}
@@ -115,6 +118,38 @@ export default function UpcomingAppointments() {
             onCancel={() => setAppointmentToCancel(null)}
           />
         </>
+      )}
+
+      {/* Pre-Call Hardware & Network Diagnostic Modal */}
+      {diagnosticAppt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <PreCallDiagnostic
+            onSuccess={() => {
+              const appt = diagnosticAppt;
+              setDiagnosticAppt(null);
+              setWaitingRoomAppt(appt);
+            }}
+            onCancel={() => setDiagnosticAppt(null)}
+          />
+        </div>
+      )}
+
+      {/* Dynamic Waiting Room Modal */}
+      {waitingRoomAppt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <WaitingRoom
+            appointmentId={waitingRoomAppt.id}
+            doctorName={waitingRoomAppt.doctorName}
+            videoRoomUrl={waitingRoomAppt.videoRoomUrl}
+            onEnterCall={() => {
+              if (waitingRoomAppt.videoRoomUrl) {
+                window.open(waitingRoomAppt.videoRoomUrl, '_blank');
+              }
+              setWaitingRoomAppt(null);
+            }}
+            onClose={() => setWaitingRoomAppt(null)}
+          />
+        </div>
       )}
     </div>
   );
