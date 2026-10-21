@@ -120,6 +120,23 @@ export interface MedicationCheckResult {
   conflicts: MedicationConflict[];
 }
 
+export interface ClinicalNoteAmendment {
+  id: string;
+  recordId: string;
+  version: number;
+  parentHash: string;
+  amendmentHash: string;
+  ledgerTxHash: string;
+  amendingDoctorName: string;
+  amendingDoctorAddress: string;
+  timestamp: string;
+  clinicalJustification: string;
+  amendedField: 'notes' | 'diagnosis' | 'prescription' | 'addendum';
+  previousContent: string;
+  newContent: string;
+}
+
+
 
 export interface EncryptedRecord {
   id: string;
