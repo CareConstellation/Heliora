@@ -28,6 +28,7 @@ import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
 import AvailabilityConfig from '@/components/doctor/AvailabilityConfig';
+import SlotBatchPublisher from '@/components/doctor/SlotBatchPublisher';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -515,6 +516,9 @@ export default function DoctorDashboard() {
 
           {/* Availability & Buffer Config (Issue #51) */}
           <AvailabilityConfig />
+
+          {/* Slot Batch Publisher (Issue #20) */}
+          <SlotBatchPublisher slots={[]} />
         </div>
       </div>
 

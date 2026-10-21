@@ -3,6 +3,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import RecordCard from '@/components/records/RecordCard';
 import { MedicalRecord } from '@/types';
 import { shareRecord } from '@/services/api.service';
+import {
+  createSorobanMockHandlers,
+  LedgerStateMachine,
+  simulationSuccess,
+  simulationOutOfGas,
+  simulationAuthError,
+} from '@/__mocks__/sorobanRpc';
 
 jest.mock('@/services/api.service', () => ({
   shareRecord: jest.fn(),
@@ -78,5 +85,61 @@ describe('RecordCard component', () => {
     });
 
     mockPrompt.mockRestore();
+  });
+});
+
+describe('Soroban mock harness integration', () => {
+  const mockHandlers = createSorobanMockHandlers();
+  const ledger = new LedgerStateMachine();
+
+  beforeEach(() => {
+    ledger.clear();
+    Object.values(mockHandlers).forEach((fn) => fn.mockClear());
+  });
+
+  it('tracks simulation invocations on success scenario', async () => {
+    mockHandlers.simulateTransaction.mockResolvedValue(simulationSuccess());
+    const result = await mockHandlers.simulateTransaction({});
+    expect(result).toHaveProperty('transactionData');
+    expect(mockHandlers.simulateTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns out-of-gas error for resource-heavy operations', async () => {
+    mockHandlers.simulateTransaction.mockResolvedValue(simulationOutOfGas());
+    const result = await mockHandlers.simulateTransaction({});
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain('CPU budget exceeded');
+  });
+
+  it('returns auth error for unauthorized invocations', async () => {
+    mockHandlers.simulateTransaction.mockResolvedValue(simulationAuthError());
+    const result = await mockHandlers.simulateTransaction({});
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain(
+      'missing authorized invocation',
+    );
+  });
+
+  it('manages ledger state for record entries', () => {
+    ledger.set('contract:record:rec1', {
+      diagnosis: 'Hypertension',
+      verified: true,
+    });
+    expect(ledger.has('contract:record:rec1')).toBe(true);
+    expect(ledger.get('contract:record:rec1')).toEqual({
+      diagnosis: 'Hypertension',
+      verified: true,
+    });
+    ledger.delete('contract:record:rec1');
+    expect(ledger.has('contract:record:rec1')).toBe(false);
+  });
+
+  it('resolves multiple ledger entries', () => {
+    ledger.set('record:1', { diagnosis: 'Flu' });
+    ledger.set('record:2', { diagnosis: 'Cold' });
+    const entries = ledger.resolve(['record:1', 'record:2', 'record:missing']);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].val).toEqual({ diagnosis: 'Flu' });
+    expect(entries[1].val).toEqual({ diagnosis: 'Cold' });
   });
 });

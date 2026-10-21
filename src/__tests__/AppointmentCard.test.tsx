@@ -4,6 +4,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import AppointmentCard from '@/components/doctor/AppointmentCard';
 import { Appointment, MedicalRecord } from '@/types';
 import { updateAppointmentStatus, fetchRecords } from '@/services/api.service';
+import {
+  createSorobanMockHandlers,
+  LedgerStateMachine,
+  sendTransactionPending,
+  pollTransactionSuccess,
+  pollTransactionFailed,
+  mockAccount,
+} from '@/__mocks__/sorobanRpc';
 
 jest.mock('@/services/api.service', () => ({
   updateAppointmentStatus: jest.fn(),
@@ -147,5 +155,66 @@ describe('AppointmentCard component', () => {
     fireEvent.click(successBtn);
 
     expect(screen.queryByTestId('mock-new-record-form')).not.toBeInTheDocument();
+  });
+});
+
+describe('Soroban mock harness integration', () => {
+  const mockHandlers = createSorobanMockHandlers();
+  const ledger = new LedgerStateMachine();
+
+  beforeEach(() => {
+    ledger.clear();
+    Object.values(mockHandlers).forEach((fn) => fn.mockClear());
+  });
+
+  it('simulates full transaction lifecycle', async () => {
+    const account = await mockHandlers.getAccount('GTEST123');
+    expect(account.accountId()).toBe('GTEST123');
+
+    const sendResult = await mockHandlers.sendTransaction({});
+    expect(sendResult.status).toBe('PENDING');
+
+    const pollResult = await mockHandlers.pollTransaction(sendResult.hash);
+    expect(pollResult.status).toBe('SUCCESS');
+  });
+
+  it('handles transaction failure in poll', async () => {
+    mockHandlers.pollTransaction.mockResolvedValue(pollTransactionFailed());
+    const result = await mockHandlers.pollTransaction('mock_hash');
+    expect(result.status).toBe('FAILED');
+  });
+
+  it('resolves ledger entries for appointment state', () => {
+    ledger.set('contract:appt:appt1', {
+      status: 'confirmed',
+      doctorId: 'doc1',
+    });
+    ledger.set('contract:appt:appt2', {
+      status: 'pending',
+      doctorId: 'doc1',
+    });
+
+    const entries = ledger.resolve([
+      'contract:appt:appt1',
+      'contract:appt:appt2',
+      'contract:appt:missing',
+    ]);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].val).toEqual({
+      status: 'confirmed',
+      doctorId: 'doc1',
+    });
+  });
+
+  it('advances ledger sequence correctly', () => {
+    const seq1 = ledger.nextSequence();
+    const seq2 = ledger.nextSequence();
+    expect(Number(seq2)).toBe(Number(seq1) + 1);
+  });
+
+  it('creates mock account with correct address', async () => {
+    const account = mockAccount('GPATIENT123', '200');
+    expect(account.accountId()).toBe('GPATIENT123');
+    expect(account.sequenceNumber()).toBe('200');
   });
 });

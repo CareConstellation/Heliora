@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import NotificationBell from '@/components/navigation/NotificationBell';
+import ContractUpgradeBanner from '@/components/layout/ContractUpgradeBanner';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
 import { Avatar } from '@/components/ui/Avatar';
@@ -268,6 +269,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </button>
           </div>
         </div>
+
+        {/* Contract upgrade notice */}
+        <ContractUpgradeBanner />
 
         {/* Page */}
         <main className="flex-1 p-6 lg:p-8">{children}</main>
