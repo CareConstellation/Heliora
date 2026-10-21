@@ -1,4 +1,4 @@
-import { BASE_FEE, Networks, TransactionBuilder, rpc, type xdr } from '@stellar/stellar-sdk';
+import { BASE_FEE, Networks, TransactionBuilder, rpc, Asset, Horizon, Operation, type xdr } from '@stellar/stellar-sdk';
 import { signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
@@ -271,3 +271,155 @@ export async function invokeSorobanContract(
   }
   return sent.hash;
 }
+
+export interface StrictReceivePathQuote {
+  sourceAsset: Asset;
+  sourceAssetCode: string;
+  sourceAssetIssuer?: string;
+  sourceAmount: string;
+  destAsset: Asset;
+  destAssetCode: string;
+  destAssetIssuer?: string;
+  destAmount: string;
+  path: Asset[];
+  conversionRate: number;
+  sendMax: string;
+  slippageTolerancePercent: number;
+}
+
+export interface SupportedPaymentAsset {
+  code: string;
+  name: string;
+  asset: Asset;
+}
+
+export const CLINICAL_PAYMENT_ASSETS: Record<'testnet' | 'mainnet', SupportedPaymentAsset[]> = {
+  testnet: [
+    { code: 'XLM', name: 'Stellar Lumens', asset: Asset.native() },
+    { code: 'USDC', name: 'USD Coin', asset: new Asset('USDC', 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5') },
+    { code: 'EURC', name: 'Euro Coin', asset: new Asset('EURC', 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5') },
+  ],
+  mainnet: [
+    { code: 'XLM', name: 'Stellar Lumens', asset: Asset.native() },
+    { code: 'USDC', name: 'USD Coin', asset: new Asset('USDC', 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN') },
+    { code: 'EURC', name: 'Euro Coin', asset: new Asset('EURC', 'GDZCEWJ5TVXUTFH6V5CVDZDDE4P74IIVRCMMDQS75WKMWHRCKIAZHA') },
+  ],
+};
+
+export function parseStellarAsset(assetStr: string): Asset {
+  if (!assetStr || assetStr === 'native' || assetStr === 'XLM' || assetStr === 'stellar:native') {
+    return Asset.native();
+  }
+  const parts = assetStr.split(':');
+  if (parts.length === 3 && parts[0] === 'stellar') {
+    return new Asset(parts[1], parts[2]);
+  }
+  if (parts.length === 2) {
+    return new Asset(parts[0], parts[1]);
+  }
+  return Asset.native();
+}
+
+/**
+ * Queries Horizon /paths/strict-receive for source assets and maximum send limits.
+ * Computes exact conversion rates and slippage bounds.
+ */
+export async function findStrictReceivePaymentPaths(options: {
+  sourceAccountOrAssets: string | Asset[];
+  destAsset: Asset;
+  destAmount: string;
+  slippageTolerancePercent?: number;
+}): Promise<StrictReceivePathQuote[]> {
+  const slippagePercent = options.slippageTolerancePercent ?? 1.0;
+  const endpoint = getHealthyEndpoint();
+  const server = new Horizon.Server(endpoint);
+
+  const response = await callHorizon(async () => {
+    return await server
+      .strictReceivePaths(options.sourceAccountOrAssets, options.destAsset, options.destAmount)
+      .call();
+  });
+
+  if (!response || !response.records || response.records.length === 0) {
+    return [];
+  }
+
+  const destAmountNum = Number(options.destAmount);
+
+  return (response.records as Array<{
+    source_asset_type: string;
+    source_asset_code: string;
+    source_asset_issuer: string;
+    source_amount: string;
+    path: Array<{ asset_type: string; asset_code: string; asset_issuer: string }>;
+  }>).map((record) => {
+    const sourceAsset =
+      record.source_asset_type === 'native'
+        ? Asset.native()
+        : new Asset(record.source_asset_code, record.source_asset_issuer);
+
+    const sourceAmountNum = Number(record.source_amount);
+    const multiplier = 1 + slippagePercent / 100;
+    const sendMaxCalculated = (sourceAmountNum * multiplier).toFixed(7);
+
+    const pathAssets: Asset[] = (record.path || []).map((hop: { asset_type: string; asset_code: string; asset_issuer: string }) =>
+      hop.asset_type === 'native' ? Asset.native() : new Asset(hop.asset_code, hop.asset_issuer),
+    );
+
+    const conversionRate = destAmountNum > 0 ? sourceAmountNum / destAmountNum : 0;
+
+    return {
+      sourceAsset,
+      sourceAssetCode: sourceAsset.isNative() ? 'XLM' : sourceAsset.getCode(),
+      sourceAssetIssuer: sourceAsset.isNative() ? undefined : sourceAsset.getIssuer(),
+      sourceAmount: record.source_amount,
+      destAsset: options.destAsset,
+      destAssetCode: options.destAsset.isNative() ? 'XLM' : options.destAsset.getCode(),
+      destAssetIssuer: options.destAsset.isNative() ? undefined : options.destAsset.getIssuer(),
+      destAmount: options.destAmount,
+      path: pathAssets,
+      conversionRate,
+      sendMax: sendMaxCalculated,
+      slippageTolerancePercent: slippagePercent,
+    };
+  });
+}
+
+/**
+ * Assembles and builds a PathPaymentStrictReceive transaction with strict slippage bounds.
+ */
+export async function buildPathPaymentStrictReceiveTransaction(options: {
+  sourceAddress: string;
+  destinationAddress: string;
+  sendAsset: Asset;
+  sendMax: string;
+  destAsset: Asset;
+  destAmount: string;
+  path?: Asset[];
+  fee?: string;
+  timeoutSeconds?: number;
+}) {
+  const endpoint = getHealthyEndpoint();
+  const server = new Horizon.Server(endpoint);
+  const account = await callHorizon(() => server.loadAccount(options.sourceAddress));
+
+  const tx = new TransactionBuilder(account, {
+    fee: options.fee || BASE_FEE,
+    networkPassphrase: STELLAR_CONFIG.passphrase,
+  })
+    .addOperation(
+      Operation.pathPaymentStrictReceive({
+        sendAsset: options.sendAsset,
+        sendMax: options.sendMax,
+        destination: options.destinationAddress,
+        destAsset: options.destAsset,
+        destAmount: options.destAmount,
+        path: options.path || [],
+      }),
+    )
+    .setTimeout(options.timeoutSeconds ?? 30)
+    .build();
+
+  return tx;
+}
+
