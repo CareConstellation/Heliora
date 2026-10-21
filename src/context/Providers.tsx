@@ -5,6 +5,7 @@ import { useState, useEffect, ReactNode } from 'react';
 import { ToastProvider } from '@/components/ui/Toast';
 import { useAuthStore } from '@/store/authStore';
 import { setSentryUser, clearSentryUser } from '@/lib/sentry';
+import { useSessionSync } from '@/hooks/useSessionSync';
 
 function SentryUserSync() {
   const { walletAddress, role } = useAuthStore();
@@ -20,6 +21,11 @@ function SentryUserSync() {
   return null;
 }
 
+function SessionSyncProvider() {
+  useSessionSync();
+  return null;
+}
+
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
 
@@ -27,6 +33,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <SentryUserSync />
+        <SessionSyncProvider />
         {children}
       </ToastProvider>
     </QueryClientProvider>
