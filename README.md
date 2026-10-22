@@ -69,6 +69,8 @@ Copy `.env.example` to `.env.local` before running the app. Each variable is des
 | `NEXT_PUBLIC_API_URL` | **Yes** | — | Backend REST API base URL. |
 | `NEXT_PUBLIC_STELLAR_NETWORK` | No | `testnet` | Stellar network to connect to. Accepted values: `testnet` \| `mainnet`. |
 | `NEXT_PUBLIC_HORIZON_URL` | No | `https://horizon-testnet.stellar.org` | Horizon API endpoint used to submit transactions and query the ledger. |
+| `NEXT_PUBLIC_AUTH_SIGNING_KEY` | For login | — | Backend SEP-10 signing key; challenges not signed by it are rejected before the wallet signs. |
+| `NEXT_PUBLIC_AUTH_HOME_DOMAIN` | No | API host | Home domain the backend puts in SEP-10 challenges. |
 
 ### How to obtain each value
 

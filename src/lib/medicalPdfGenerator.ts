@@ -185,3 +185,141 @@ export function generateQRCodeDataURL(stellarHash: string, recordDigest: string)
   const qrData = `STX:${stellarHash}|DIGEST:${recordDigest}`;
   return generateQRCodeData(qrData);
 }
+
+import type { AnchoredConsentReceipt } from '@/lib/crypto';
+
+/**
+ * Generates a cryptographic PDF proof for an on-chain anchored consent receipt.
+ */
+export async function generateConsentReceiptPDF(
+  receipt: AnchoredConsentReceipt,
+  patientName?: string,
+): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]); // Letter size
+  const { height } = page.getSize();
+  let yPosition = height - 50;
+
+  const drawText = (text: string, x: number, y: number, size: number = 11, isBold: boolean = false) => {
+    const font = isBold ? 'Helvetica-Bold' : 'Helvetica';
+    page.drawText(text, {
+      x,
+      y,
+      size,
+      color: rgb(0.1, 0.1, 0.1),
+      font: font as any,
+    });
+  };
+
+  const drawLine = (x1: number, y1: number, x2: number, y2: number) => {
+    page.drawLine({
+      start: { x: x1, y: y1 },
+      end: { x: x2, y: y2 },
+      thickness: 1,
+      color: rgb(0.85, 0.85, 0.85),
+    });
+  };
+
+  // Header Title
+  drawText('CRYPTOGRAPHIC PATIENT CONSENT RECEIPT', 50, yPosition, 16, true);
+  yPosition -= 18;
+  drawText('Verifiable On-Chain Record Transmission Token (Soroban Ledger Anchor)', 50, yPosition, 9);
+  yPosition -= 20;
+
+  drawLine(50, yPosition, 562, yPosition);
+  yPosition -= 25;
+
+  // Receipt ID Banner
+  drawText('RECEIPT IDENTIFIER:', 50, yPosition, 10, true);
+  yPosition -= 14;
+  drawText(receipt.receiptId, 50, yPosition, 11);
+  yPosition -= 25;
+
+  // Agreement Parameters
+  drawText('CONSENT AGREEMENT PARAMETERS', 50, yPosition, 12, true);
+  yPosition -= 18;
+
+  if (patientName) {
+    drawText(`Patient Name: ${patientName}`, 50, yPosition, 10);
+    yPosition -= 14;
+  }
+  drawText(`Patient Address: ${receipt.patientAddress}`, 50, yPosition, 9);
+  yPosition -= 14;
+  drawText(`Authorized Recipient: ${receipt.recipient} (${receipt.recipientType})`, 50, yPosition, 9);
+  yPosition -= 14;
+  drawText(`Clinical Purpose: ${receipt.purpose}`, 50, yPosition, 10);
+  yPosition -= 14;
+  drawText(`Authorized Duration: ${receipt.durationDays} Days`, 50, yPosition, 10);
+  yPosition -= 14;
+  drawText(`Issued: ${new Date(receipt.createdAt).toLocaleString()} | Expires: ${new Date(receipt.validUntil).toLocaleString()}`, 50, yPosition, 9);
+  yPosition -= 25;
+
+  drawLine(50, yPosition, 562, yPosition);
+  yPosition -= 25;
+
+  // On-Chain Cryptographic Anchor Section
+  drawText('BLOCKCHAIN ANCHOR & CRYPTOGRAPHIC PROOF', 50, yPosition, 12, true);
+  yPosition -= 18;
+
+  drawText('Agreement SHA-256 Digest:', 50, yPosition, 9, true);
+  yPosition -= 13;
+  drawText(receipt.agreementDigest, 60, yPosition, 8);
+  yPosition -= 18;
+
+  drawText('Target Medical Record Content Hash:', 50, yPosition, 9, true);
+  yPosition -= 13;
+  drawText(receipt.recordHash, 60, yPosition, 8);
+  yPosition -= 18;
+
+  drawText('Soroban Consent Contract Address:', 50, yPosition, 9, true);
+  yPosition -= 13;
+  drawText(receipt.contractAddress, 60, yPosition, 8);
+  yPosition -= 18;
+
+  drawText('Ledger Transaction Hash:', 50, yPosition, 9, true);
+  yPosition -= 13;
+  drawText(receipt.ledgerTxHash, 60, yPosition, 8);
+  yPosition -= 30;
+
+  // QR Code Verification
+  try {
+    const qrDataUrl = await generateQRCodeDataURL(receipt.ledgerTxHash, receipt.agreementDigest);
+    const qrImage = await pdfDoc.embedPng(qrDataUrl);
+    page.drawImage(qrImage, {
+      x: 450,
+      y: yPosition - 40,
+      width: 90,
+      height: 90,
+    });
+    drawText('Scan to verify proof on ledger', 430, yPosition - 50, 7);
+  } catch {
+    // If canvas is unavailable in non-browser context
+  }
+
+  // Footer Note
+  drawLine(50, 70, 562, 70);
+  drawText('Heliora Decentralized Health Protocol - Non-repudiable cryptographically verified proof.', 50, 55, 8);
+
+  return pdfDoc.save();
+}
+
+/**
+ * Downloads the cryptographic consent receipt PDF proof to the user's browser.
+ */
+export async function downloadConsentReceiptPDF(
+  receipt: AnchoredConsentReceipt,
+  patientName?: string,
+  filename?: string,
+): Promise<void> {
+  const pdfBytes = await generateConsentReceiptPDF(receipt, patientName);
+  const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || `consent_receipt_${receipt.receiptId}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+

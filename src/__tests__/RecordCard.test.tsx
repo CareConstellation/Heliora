@@ -39,6 +39,16 @@ const mockRecord: MedicalRecord = {
   patientAddress: 'GPATIENT123',
 };
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderRecordCard = (record: MedicalRecord) =>
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RecordCard record={record} />
+    </QueryClientProvider>,
+  );
+
 describe('RecordCard component', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -63,7 +73,7 @@ describe('RecordCard component', () => {
 
     // Drawer should open and display title & prescription details
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('Record Details')).toBeInTheDocument();
+    expect(screen.getByText('Clinical Medical Record')).toBeInTheDocument();
     expect(screen.getByText('Lisinopril 10mg')).toBeInTheDocument();
   });
 

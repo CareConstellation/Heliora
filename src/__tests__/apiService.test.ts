@@ -31,6 +31,7 @@ jest.mock('axios', () => {
     post: jest.fn(),
     patch: jest.fn(),
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((fulfilled, rejected) => {
           mockInterceptorFulfilled = fulfilled;

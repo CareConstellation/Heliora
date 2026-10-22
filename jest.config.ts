@@ -17,6 +17,7 @@ const config: Config = {
   },
   transformIgnorePatterns: ['/node_modules/(?!(@scure|@noble)/)'],
   moduleNameMapper: {
+    '^@/lib/cryptoWorkerApi$': '<rootDir>/src/__mocks__/cryptoWorkerApi.ts',
     '^@/(.*)$': '<rootDir>/src/$1',
     // stub Next.js internals & CSS
     '^next/navigation$': '<rootDir>/src/__mocks__/next/navigation.ts',

@@ -35,7 +35,7 @@ function ConsultationContent() {
 
 export default function ConsultationPage() {
   return (
-    <ProtectedRoute requiredRole="DOCTOR">
+    <ProtectedRoute requiredRole={['DOCTOR', 'PATIENT']}>
       <Suspense
         fallback={<div className="animate-pulse h-screen bg-surface-card" />}
       >

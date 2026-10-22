@@ -6,11 +6,12 @@ import { fetchEncounterNote, saveEncounterNote } from '@/services/api.service';
 
 interface Props {
   appointmentId: string;
+  initialDraftContent?: string | undefined;
 }
 
 const AUTOSAVE_DELAY_MS = 2000;
 
-export default function EncounterNotes({ appointmentId }: Props) {
+export default function EncounterNotes({ appointmentId, initialDraftContent }: Props) {
   const queryClient = useQueryClient();
   const [content, setContent] = useState('');
   const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -23,13 +24,6 @@ export default function EncounterNotes({ appointmentId }: Props) {
     enabled: !!appointmentId,
     retry: false,
   });
-
-  useEffect(() => {
-    if (existing?.content) {
-      setContent(existing.content);
-      setLastSaved(existing.updatedAt);
-    }
-  }, [existing]);
 
   const saveMutation = useMutation({
     mutationFn: (text: string) => saveEncounterNote(appointmentId, text),
@@ -47,6 +41,21 @@ export default function EncounterNotes({ appointmentId }: Props) {
       if (text.trim()) mutateRef.current?.(text);
     }, AUTOSAVE_DELAY_MS);
   }, []);
+
+  useEffect(() => {
+    if (existing?.content) {
+      setContent(existing.content);
+      setLastSaved(existing.updatedAt);
+    } else if (initialDraftContent) {
+      setContent((prev) => {
+        if (!prev) {
+          debouncedSave(initialDraftContent);
+          return initialDraftContent;
+        }
+        return prev;
+      });
+    }
+  }, [existing, initialDraftContent, debouncedSave]);
 
   useEffect(() => {
     return () => clearTimeout(timerRef.current);

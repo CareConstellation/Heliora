@@ -2,15 +2,19 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWalletStore } from '@/store/useWalletStore';
+import { useWalletManager } from '@/hooks/useWalletManager';
 import { ledgerHardwareWallet } from '@/lib/ledgerHardwareWallet';
+import { FriendbotFaucet } from '@/lib/wallet/FriendbotFaucet';
 import type { UserRole } from '@/types';
+import type { WalletType } from '@/lib/wallet/adapters';
 import api from '@/services/api.service';
 
 interface Props {
   onClose: () => void;
+  autoFundTestnet?: boolean;
 }
 
-type WalletOption = 'freighter' | 'albedo' | 'ledger';
+type WalletOption = 'freighter' | 'albedo' | 'ledger' | 'xbull' | 'lobstr' | 'walletconnect';
 
 function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
   useEffect(() => {
@@ -58,12 +62,14 @@ function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => v
   }, [ref, onClose]);
 }
 
-export default function ConnectWalletModal({ onClose }: Props) {
+export default function ConnectWalletModal({ onClose, autoFundTestnet = false }: Props) {
   const { setWallet, network } = useWalletStore();
+  const { connect, availableWallets, isLoading, error: managerError } = useWalletManager();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<WalletOption | null>(null);
   const [ledgerAccounts, setLedgerAccounts] = useState<Array<{ publicKey: string; path: string }> | null>(null);
   const [ledgerSupported, setLedgerSupported] = useState(true);
+  const [fundingStatus, setFundingStatus] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
 
   useFocusTrap(modalRef, onClose);
@@ -79,53 +85,62 @@ export default function ConnectWalletModal({ onClose }: Props) {
     [onClose],
   );
 
-  async function connectFreighter() {
-    if (!window.freighter) {
-      setError('Freighter extension not installed. Please install it from freighter.app');
-      return;
-    }
-    setLoading('freighter');
+  async function handleWalletConnect(walletType: WalletType) {
+    setLoading(walletType as WalletOption);
     setError(null);
+    setFundingStatus(null);
+
     try {
-      const walletNetwork = await window.freighter.getNetwork();
-      if (walletNetwork.toLowerCase() !== network.toLowerCase()) {
-        setError(`Network mismatch. Switch Freighter to ${network}.`);
+      const publicKey = await connect(walletType);
+      if (!publicKey) {
+        setError('Failed to connect wallet');
         return;
       }
-      const publicKey = await window.freighter.getPublicKey();
+
+      // Auto-fund testnet if enabled
+      if (autoFundTestnet && network === 'testnet') {
+        setFundingStatus('Funding account...');
+        try {
+          await FriendbotFaucet.fundAccountIfNeeded(publicKey, 2);
+          setFundingStatus('Account funded successfully');
+        } catch (fundError) {
+          // Log but don't block on funding error
+          console.warn('Failed to fund account:', fundError);
+        }
+      }
+
       const { data } = await api.get<{ role: UserRole }>(`/users/${publicKey}/role`);
-      setWallet(publicKey, data.role);
+      setWallet(publicKey, data.role, walletType === 'ledger' ? 'ledger' : 'freighter');
       onClose();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(
-        msg.includes('rejected') ? 'Connection rejected by user.' : 'Failed to connect Freighter.',
+        msg.includes('rejected') ? 'Connection rejected by user.' : `Failed to connect wallet: ${msg}`,
       );
     } finally {
       setLoading(null);
+      setFundingStatus(null);
     }
   }
 
+  async function connectFreighter() {
+    await handleWalletConnect('freighter');
+  }
+
   async function connectAlbedo() {
-    if (!window.albedo) {
-      setError('Albedo not available. Please visit albedo.link');
-      return;
-    }
-    setLoading('albedo');
-    setError(null);
-    try {
-      const { pubkey } = await window.albedo.publicKey({});
-      const { data } = await api.get<{ role: UserRole }>(`/users/${pubkey}/role`);
-      setWallet(pubkey, data.role);
-      onClose();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        msg.includes('rejected') ? 'Connection rejected by user.' : 'Failed to connect Albedo.',
-      );
-    } finally {
-      setLoading(null);
-    }
+    await handleWalletConnect('albedo');
+  }
+
+  async function connectXbull() {
+    await handleWalletConnect('xbull');
+  }
+
+  async function connectLobstr() {
+    await handleWalletConnect('lobstr');
+  }
+
+  async function connectWalletConnect() {
+    await handleWalletConnect('walletconnect');
   }
 
   async function connectLedger() {
@@ -179,8 +194,16 @@ export default function ConnectWalletModal({ onClose }: Props) {
           </button>
         </div>
 
-        {error && (
-          <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">{error}</p>
+        {(error || managerError) && (
+          <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">
+            {error || managerError?.message}
+          </p>
+        )}
+
+        {fundingStatus && (
+          <p className="mb-4 text-sm text-blue-600 bg-blue-50 rounded-md px-3 py-2">
+            {fundingStatus}
+          </p>
         )}
 
         {ledgerAccounts ? (
@@ -225,6 +248,27 @@ export default function ConnectWalletModal({ onClose }: Props) {
             >
               {loading === 'albedo' ? 'Connecting…' : '🌐 Albedo'}
             </button>
+            <button
+              onClick={connectXbull}
+              disabled={!!loading}
+              className="flex items-center justify-center gap-2 w-full rounded-lg border border-slate-200 px-4 py-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+            >
+              {loading === 'xbull' ? 'Connecting…' : '💧 xBull'}
+            </button>
+            <button
+              onClick={connectLobstr}
+              disabled={!!loading}
+              className="flex items-center justify-center gap-2 w-full rounded-lg border border-slate-200 px-4 py-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+            >
+              {loading === 'lobstr' ? 'Connecting…' : '🔐 LOBSTR'}
+            </button>
+            <button
+              onClick={connectWalletConnect}
+              disabled={!!loading}
+              className="flex items-center justify-center gap-2 w-full rounded-lg border border-slate-200 px-4 py-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+            >
+              {loading === 'walletconnect' ? 'Connecting…' : '📱 WalletConnect'}
+            </button>
             {ledgerSupported && (
               <button
                 onClick={connectLedger}
@@ -237,7 +281,9 @@ export default function ConnectWalletModal({ onClose }: Props) {
           </div>
         )}
 
-        <p className="mt-4 text-xs text-slate-400 text-center">Network: {network}</p>
+        <p className="mt-4 text-xs text-slate-400 text-center">
+          Network: {network} {autoFundTestnet && network === 'testnet' && '(Auto-fund enabled)'}
+        </p>
       </div>
     </div>
   );

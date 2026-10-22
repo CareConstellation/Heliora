@@ -18,7 +18,7 @@ jest.mock('axios', () => {
   return {
     __esModule: true,
     default: {
-      create: jest.fn(() => ({ ...mockApi, interceptors: { response: { use: jest.fn() } } })),
+      create: jest.fn(() => ({ ...mockApi, interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } } })),
       post: mockAxiosPost,
     },
   };
