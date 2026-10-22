@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
@@ -9,16 +9,32 @@ import { detectRoleTampering, serializeRoleToken, createRoleToken } from '@/lib/
 import type { UserRole } from '@/types';
 
 interface Props {
-  requiredRole: UserRole;
+  requiredRole?: UserRole | UserRole[] | undefined;
+  allowedRoles?: UserRole[] | undefined;
   children: React.ReactNode;
 }
 
-export default function ProtectedRoute({ requiredRole, children }: Props) {
+export default function ProtectedRoute({ requiredRole, allowedRoles, children }: Props) {
   const { publicKey, role } = useWalletStore();
   const { roleSignature, setRoleTrustLevel } = useAuthStore();
   const router = useRouter();
   const [verified, setVerified] = useState(false);
   const [resolvedRole, setResolvedRole] = useState<UserRole | null>(null);
+
+  const isRoleAllowed = useCallback(
+    (target: UserRole | null): boolean => {
+      const allowedList = Array.isArray(requiredRole)
+        ? requiredRole
+        : allowedRoles
+          ? allowedRoles
+          : requiredRole
+            ? [requiredRole]
+            : [];
+      if (allowedList.length === 0) return true;
+      return !!target && allowedList.includes(target);
+    },
+    [requiredRole, allowedRoles],
+  );
 
   useEffect(() => {
     if (!publicKey) {
@@ -53,7 +69,7 @@ export default function ProtectedRoute({ requiredRole, children }: Props) {
         setResolvedRole(resolved);
         setVerified(true);
 
-        if (resolved !== requiredRole) {
+        if (!isRoleAllowed(resolved)) {
           router.replace('/');
         }
       } catch (err) {
@@ -61,7 +77,7 @@ export default function ProtectedRoute({ requiredRole, children }: Props) {
         console.error('Role verification error:', err);
         setResolvedRole(role);
         setVerified(true);
-        if (role !== requiredRole) {
+        if (!isRoleAllowed(role)) {
           router.replace('/');
         }
       }
@@ -72,10 +88,10 @@ export default function ProtectedRoute({ requiredRole, children }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [publicKey, role, roleSignature, requiredRole, router, setRoleTrustLevel]);
+  }, [publicKey, role, roleSignature, requiredRole, router, setRoleTrustLevel, isRoleAllowed]);
 
   if (!publicKey || !verified) return null;
-  if (resolvedRole !== requiredRole) return null;
+  if (!isRoleAllowed(resolvedRole)) return null;
 
   return <>{children}</>;
 }
