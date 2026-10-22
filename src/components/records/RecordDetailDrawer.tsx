@@ -14,17 +14,12 @@ import {
   User,
   FileText,
   ExternalLink,
-  Languages,
-  AlertTriangle,
-  Globe,
-  Lock,
+  ChevronRight,
+  Sparkles,
+  Trash2,
 } from 'lucide-react';
-import {
-  SUPPORTED_LANGUAGES,
-  MANDATORY_TRANSLATION_WATERMARK,
-  translateMedicalRecord,
-  type SupportedLanguage,
-} from '@/lib/clinicalTranslation';
+import RecordDeletionModal from './RecordDeletionModal';
+
 
 interface Props {
   record: MedicalRecord;
@@ -88,6 +83,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
   const [targetLang, setTargetLang] = useState<SupportedLanguage>('es');
   const [amendments, setAmendments] = useState<ClinicalNoteAmendment[]>([]);
   const [showAmendmentForm, setShowAmendmentForm] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Form state for creating a new amendment
   const [amendField, setAmendField] = useState<'notes' | 'diagnosis' | 'prescription' | 'addendum'>('notes');
@@ -313,7 +309,6 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                   </div>
                 )}
               </dl>
-
               <RecordIpfsStatus recordId={record.id} />
 
               {record.dicomUrl && (
@@ -323,16 +318,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                 </section>
               )}
 
-              <div className="pt-2 space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('translation')}
-                  className="w-full rounded-lg border border-blue-200 bg-blue-50/60 py-2.5 text-xs font-semibold text-blue-900 hover:bg-blue-100/70 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Languages className="w-4 h-4 text-blue-600" />
-                  View Side-by-Side Automated Translation (Cross-Border)
-                </button>
-
+              <div className="pt-2 flex flex-col gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -343,6 +329,14 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                 >
                   <PlusCircle className="w-4 h-4 text-green" />
                   Issue Clinical Amendment / Addendum
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteModal(true)}
+                  className="w-full rounded-lg border border-red-200 bg-red-50 py-2.5 text-xs font-semibold text-red-700 hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4 text-red-600" />
+                  Delete / Archive Record (Hardware Key / WebAuthn Required)
                 </button>
               </div>
             </div>
@@ -796,6 +790,16 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
           )}
         </div>
       </div>
+
+      <RecordDeletionModal
+        record={record}
+        isOpen={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirmDeletion={async (recordId) => {
+          localStorage.setItem(`heliora_deleted_${recordId}`, 'true');
+          onClose();
+        }}
+      />
     </div>
   );
 }

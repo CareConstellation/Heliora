@@ -8,16 +8,27 @@ import { checkMedicationInteractions } from '@/services/drugInteractionService';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
-import type { DiagnosisCode, MedicationCheckResult } from '@/types';
-import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info } from 'lucide-react';
+import type { DiagnosisCode, MedicationCheckResult, ClinicalDraftNote } from '@/types';
+import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info, Sparkles } from 'lucide-react';
+import { getStoredDraftNote, clearStoredDraftNote, getDraftStorageKey } from '@/lib/transcription';
 
 interface Props {
   patientAddress: string;
   onSuccess: () => void;
   patientAllergies?: string[];
+  initialNotes?: string | undefined;
+  initialDiagnosis?: string | undefined;
+  initialPrescription?: string | undefined;
 }
 
-export default function NewRecordForm({ patientAddress, onSuccess, patientAllergies = [] }: Props) {
+export default function NewRecordForm({
+  patientAddress,
+  onSuccess,
+  patientAllergies = [],
+  initialNotes,
+  initialDiagnosis,
+  initialPrescription,
+}: Props) {
   const { publicKey } = useWalletStore();
   const queryClient = useQueryClient();
   const [form, setForm] = useState({
@@ -28,6 +39,65 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
     acknowledgeRisk: false,
   });
   const [dx, setDx] = useState<DiagnosisCode | null>(null);
+  const [draftApplied, setDraftApplied] = useState(false);
+
+  // Auto-populate draft note text fields at the end of the call (#64)
+  useEffect(() => {
+    const applyDraft = (draft: ClinicalDraftNote) => {
+      setForm((prev) => ({
+        ...prev,
+        notes: prev.notes || draft.notes || '',
+        diagnosis: prev.diagnosis || draft.diagnosis || '',
+        prescription: prev.prescription || draft.prescription || '',
+      }));
+      setDraftApplied(true);
+    };
+
+    if (initialNotes || initialDiagnosis || initialPrescription) {
+      setForm((prev) => ({
+        ...prev,
+        notes: prev.notes || initialNotes || '',
+        diagnosis: prev.diagnosis || initialDiagnosis || '',
+        prescription: prev.prescription || initialPrescription || '',
+      }));
+      setDraftApplied(true);
+      return;
+    }
+
+    const storedDraft = getStoredDraftNote(patientAddress);
+    if (storedDraft) {
+      applyDraft(storedDraft);
+    }
+
+    // Handle end-of-call live draft events
+    const handleDraftReady = (e: Event) => {
+      const custom = e as CustomEvent<ClinicalDraftNote>;
+      if (custom.detail && custom.detail.patientAddress === patientAddress) {
+        applyDraft(custom.detail);
+      }
+    };
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === getDraftStorageKey(patientAddress) && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue) as ClinicalDraftNote;
+          applyDraft(parsed);
+        } catch {}
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('heliora-draft-note-ready', handleDraftReady);
+      window.addEventListener('storage', handleStorage);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('heliora-draft-note-ready', handleDraftReady);
+        window.removeEventListener('storage', handleStorage);
+      }
+    };
+  }, [patientAddress, initialNotes, initialDiagnosis, initialPrescription]);
 
   const [checkResult, setCheckResult] = useState<MedicationCheckResult | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -124,7 +194,7 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
         diagnosis: form.diagnosis,
         prescription: form.prescription,
         notes: notesContent,
-        overrideRationale: form.overrideRationale.trim() || undefined,
+        ...(form.overrideRationale.trim() ? { overrideRationale: form.overrideRationale.trim() } : {}),
         ...(dx ? { diagnosisCode: dx } : {}),
       });
 
@@ -168,6 +238,8 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       return record;
     },
     onSuccess: () => {
+      clearStoredDraftNote(patientAddress);
+      setDraftApplied(false);
       queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
       queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
       setForm({
@@ -191,6 +263,31 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       }}
       className="space-y-4"
     >
+      {draftApplied && (
+        <div className="flex items-center justify-between rounded-lg bg-green/10 border border-green/20 px-3 py-2 text-xs text-text-1">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-green shrink-0" />
+            <span>Draft clinical notes auto-populated from call transcription</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              clearStoredDraftNote(patientAddress);
+              setDraftApplied(false);
+              setForm((f: { diagnosis: string; prescription: string; notes: string; overrideRationale: string; acknowledgeRisk: boolean }) => ({
+                ...f,
+                notes: '',
+                diagnosis: '',
+                prescription: '',
+              }));
+            }}
+            className="text-2xs text-text-3 hover:text-text-1 underline ml-2"
+          >
+            Clear Draft
+          </button>
+        </div>
+      )}
+
       <div>
         <label className="block text-xs font-medium text-text-2 mb-1">Diagnosis *</label>
         <DiagnosisCodeInput

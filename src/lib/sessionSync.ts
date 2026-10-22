@@ -66,7 +66,7 @@ export const sessionSync = {
     this.broadcast(event);
   },
 
-  private broadcast(event: SessionEvent) {
+  broadcast(event: SessionEvent) {
     if (!channel) return;
     try {
       channel.postMessage(event);
