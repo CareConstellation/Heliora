@@ -1,4 +1,4 @@
-import { Keypair, StrKey } from 'stellar-sdk';
+import { Keypair, StrKey } from '@stellar/stellar-sdk';
 
 interface CredentialAttestationData {
   clinicianAddress: string;
@@ -130,13 +130,6 @@ class ClinicianCredentialAttestation {
    * Contains credential hash and verification URL
    */
   private generateCredentialQRCode(credentialData: CredentialAttestationData): string {
-    const qrData = JSON.stringify({
-      clinician: credentialData.clinicianAddress,
-      license: credentialData.licenseNumber,
-      issuer: credentialData.issuer,
-      verification: credentialData.metadata?.verificationUrl,
-    });
-
     const svgQR = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
       <rect fill="white" width="200" height="200"/>
       <text x="100" y="100" text-anchor="middle" dominant-baseline="middle" font-size="12">
@@ -253,4 +246,5 @@ class ClinicianCredentialAttestation {
   }
 }
 
-export { ClinicianCredentialAttestation, CredentialAttestationData, NFTMetadata, SBTMetadata };
+export { ClinicianCredentialAttestation };
+export type { CredentialAttestationData, NFTMetadata, SBTMetadata };

@@ -180,7 +180,7 @@ export default function PreCallDiagnostic({
 
   // Run on mount
   useEffect(() => {
-    runDiagnostic();
+    void runDiagnostic();
     return () => cleanupResources();
   }, [runDiagnostic, cleanupResources]);
 

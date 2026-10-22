@@ -23,11 +23,10 @@ const MAINNET_ENDPOINTS = [
   'https://mainnet.stellar.lobstr.co',
 ];
 
-const HEALTH_CHECK_INTERVAL = 30000;
 const LATENCY_THRESHOLD_MS = 2500;
 const MAX_FAILURES = 3;
 
-let endpointHealth: Map<string, EndpointHealth> = new Map();
+const endpointHealth: Map<string, EndpointHealth> = new Map();
 
 /**
  * Global Stellar configuration for the application.
@@ -47,7 +46,7 @@ const endpoints = isMainnet ? MAINNET_ENDPOINTS : TESTNET_ENDPOINTS;
 
 export const STELLAR_CONFIG = {
   network: process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet',
-  horizonUrl: process.env.NEXT_PUBLIC_HORIZON_URL || endpoints[0],
+  horizonUrl: process.env.NEXT_PUBLIC_HORIZON_URL || endpoints[0]!,
   endpoints,
   passphrase: isMainnet ? Networks.PUBLIC : Networks.TESTNET,
   // SDF hosts a public Soroban RPC for testnet only; mainnet needs a provider URL.
@@ -69,7 +68,7 @@ function initializeEndpointHealth() {
   }
 }
 
-async function checkEndpointHealth(url: string): Promise<number> {
+export async function checkEndpointHealth(url: string): Promise<number> {
   const startTime = performance.now();
   try {
     const response = await fetch(`${url}/health`, {
@@ -112,8 +111,8 @@ export function getHealthyEndpoint(): string {
     });
 
   return healthyEndpoints.length > 0
-    ? healthyEndpoints[0].url
-    : STELLAR_CONFIG.endpoints[0];
+    ? healthyEndpoints[0]!.url
+    : STELLAR_CONFIG.endpoints[0]!;
 }
 
 export function resetEndpointFailure(url: string) {

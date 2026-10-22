@@ -1,7 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RecordCard from '@/components/records/RecordCard';
-import { MedicalRecord } from '@/types';
+import { type MedicalRecord } from '@/types';
 import { shareRecord } from '@/services/api.service';
 import {
   createSorobanMockHandlers,
@@ -21,6 +22,13 @@ jest.mock('@/hooks/useToast', () => ({
   }),
 }));
 
+const renderRecordCard = (record: MedicalRecord) =>
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <RecordCard record={record} />
+    </QueryClientProvider>,
+  );
+
 const mockRecord: MedicalRecord = {
   id: 'rec1',
   date: '2026-07-28T00:00:00.000Z',
@@ -37,7 +45,7 @@ describe('RecordCard component', () => {
   });
 
   it('renders record fields correctly', () => {
-    render(<RecordCard record={mockRecord} />);
+    renderRecordCard(mockRecord);
     
     expect(screen.getByText('Hypertension')).toBeInTheDocument();
     expect(screen.getByText('Dr. Sarah Smith')).toBeInTheDocument();
@@ -45,7 +53,7 @@ describe('RecordCard component', () => {
   });
 
   it('opens details drawer when view button is clicked', () => {
-    render(<RecordCard record={mockRecord} />);
+    renderRecordCard(mockRecord);
     
     // Drawer should not be in document initially
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -68,7 +76,7 @@ describe('RecordCard component', () => {
     };
     (shareRecord as jest.Mock).mockResolvedValue(mockShareResponse);
 
-    render(<RecordCard record={mockRecord} />);
+    renderRecordCard(mockRecord);
 
     const shareButton = screen.getByRole('button', { name: /share/i });
     fireEvent.click(shareButton);
@@ -139,7 +147,7 @@ describe('Soroban mock harness integration', () => {
     ledger.set('record:2', { diagnosis: 'Cold' });
     const entries = ledger.resolve(['record:1', 'record:2', 'record:missing']);
     expect(entries).toHaveLength(2);
-    expect(entries[0].val).toEqual({ diagnosis: 'Flu' });
-    expect(entries[1].val).toEqual({ diagnosis: 'Cold' });
+    expect(entries[0]!.val).toEqual({ diagnosis: 'Flu' });
+    expect(entries[1]!.val).toEqual({ diagnosis: 'Cold' });
   });
 });

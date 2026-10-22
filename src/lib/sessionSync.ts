@@ -44,7 +44,7 @@ export const sessionSync = {
     const event: SessionEvent = {
       type: 'AUTH_LOGOUT',
       timestamp: Date.now(),
-      walletAddress,
+      ...(walletAddress ? { walletAddress } : {}),
     };
     this.broadcast(event);
   },
@@ -66,7 +66,7 @@ export const sessionSync = {
     this.broadcast(event);
   },
 
-  private broadcast(event: SessionEvent) {
+  broadcast(event: SessionEvent) {
     if (!channel) return;
     try {
       channel.postMessage(event);

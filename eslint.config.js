@@ -20,6 +20,7 @@ export default tseslint.config(
       'coverage/**',
       '*.config.js',       // postcss.config.js, jest.config.ts excluded below
       'next.config.mjs',
+      'next-env.d.ts',
       'tailwind.config.ts',
       'jest.config.ts',
     ],
@@ -75,6 +76,8 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'off',
       '@typescript-eslint/no-misused-promises': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/consistent-type-imports': 'off',
       'no-console': 'off',
     },
   },

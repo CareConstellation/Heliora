@@ -15,12 +15,10 @@ describe('Entropy Source Auditing (#43)', () => {
   });
 
   it('throws CryptographicFaultError when PRNG returns identical consecutive buffers (stuck PRNG)', () => {
-    let call = 0;
     const staticCrypto = {
       getRandomValues: (buffer: Uint8Array) => {
         // Return identical predictable pattern
         buffer.fill(42);
-        call++;
         return buffer;
       },
     } as unknown as Crypto;

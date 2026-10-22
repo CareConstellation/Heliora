@@ -9,7 +9,7 @@ import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import type { DiagnosisCode, MedicationCheckResult } from '@/types';
-import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info } from 'lucide-react';
+import { AlertTriangle, AlertOctagon, ShieldAlert, Info } from 'lucide-react';
 
 interface Props {
   patientAddress: string;
@@ -79,18 +79,20 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       return;
     }
 
-    const timer = setTimeout(async () => {
-      setIsChecking(true);
-      try {
-        const result = await checkMedicationInteractions({
-          proposedPrescription: form.prescription,
-          activeMedications,
-          allergies: documentedAllergies,
-        });
-        if (active) setCheckResult(result);
-      } finally {
-        if (active) setIsChecking(false);
-      }
+    const timer = setTimeout(() => {
+      void (async () => {
+        setIsChecking(true);
+        try {
+          const result = await checkMedicationInteractions({
+            proposedPrescription: form.prescription,
+            activeMedications,
+            allergies: documentedAllergies,
+          });
+          if (active) setCheckResult(result);
+        } finally {
+          if (active) setIsChecking(false);
+        }
+      })();
     }, 200);
 
     return () => {
@@ -124,7 +126,9 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
         diagnosis: form.diagnosis,
         prescription: form.prescription,
         notes: notesContent,
-        overrideRationale: form.overrideRationale.trim() || undefined,
+        ...(form.overrideRationale.trim()
+          ? { overrideRationale: form.overrideRationale.trim() }
+          : {}),
         ...(dx ? { diagnosisCode: dx } : {}),
       });
 
@@ -168,8 +172,8 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       return record;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
-      queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
+      void queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
       setForm({
         diagnosis: '',
         prescription: '',

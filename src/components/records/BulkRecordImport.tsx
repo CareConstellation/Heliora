@@ -11,7 +11,7 @@ import {
   validateRowsChunked,
   analyzeErrors,
   executeBatchImportWithRollback,
-  PreviewRow,
+  type PreviewRow,
 } from '@/lib/bulkRecordParser';
 import {
   Upload,
@@ -20,7 +20,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
-  RefreshCw,
+
   AlertTriangle,
   RotateCcw,
   Check,
@@ -126,7 +126,7 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   }
 
   function clearPreview() {
@@ -145,7 +145,9 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
   ) {
     if (!preview) return;
     const updated = [...preview];
-    const targetRow = { ...updated[rowIndex] };
+    const current = updated[rowIndex];
+    if (!current) return;
+    const targetRow = { ...current };
     targetRow[field] = value;
 
     // Immediately re-validate the updated row
@@ -185,8 +187,8 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
 
       setImportStatus('completed');
       toast(`Successfully imported all ${result.totalImported} records.`, 'success');
-      queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
-      queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
 
       onComplete?.({
         imported: result.totalImported,
@@ -197,8 +199,8 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
           date: r.date,
           doctorName: r.doctorName,
           diagnosis: r.diagnosis,
-          prescription: r.prescription,
-          notes: r.notes,
+          ...(r.prescription !== undefined ? { prescription: r.prescription } : {}),
+          ...(r.notes !== undefined ? { notes: r.notes } : {}),
           patientAddress,
         })),
       });

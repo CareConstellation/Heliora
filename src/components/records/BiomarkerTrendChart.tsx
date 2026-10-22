@@ -3,7 +3,11 @@
 import { useState, useEffect } from 'react';
 import { TrendingUp } from 'lucide-react';
 import type { BiomarkerTrendData } from '@/lib/biomarkerExtractor';
-import { extractBiomarkerFromRecords, extractMultipleBiomarkers, getAvailableBiomarkers } from '@/lib/biomarkerExtractor';
+import {
+  extractMultipleBiomarkers,
+  getAvailableBiomarkers,
+  type BiomarkerName,
+} from '@/lib/biomarkerExtractor';
 import type { MedicalRecord } from '@/types';
 
 interface BiomarkerTrendChartProps {
@@ -20,8 +24,8 @@ function SimpleLineChart({
   data: Array<{ date: string; value: number; status: string }>;
   title: string;
   unit: string;
-  referenceMin?: number;
-  referenceMax?: number;
+  referenceMin?: number | undefined;
+  referenceMax?: number | undefined;
 }) {
   if (data.length === 0) {
     return (
@@ -153,7 +157,7 @@ export function BiomarkerTrendChart({ records }: BiomarkerTrendChartProps) {
   useEffect(() => {
     const extracted = extractMultipleBiomarkers(
       records,
-      selectedBiomarkers as Array<keyof typeof import('@/lib/biomarkerExtractor').BIOMARKER_DEFINITIONS>,
+      selectedBiomarkers as BiomarkerName[],
     );
     setTrends(extracted);
   }, [records, selectedBiomarkers]);

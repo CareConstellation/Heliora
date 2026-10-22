@@ -19,7 +19,10 @@ import api, {
   bulkImportRecords,
 } from '@/services/api.service';
 
+// `var` keeps these hoisted above the jest.mock factory, which runs before imports.
+// eslint-disable-next-line no-var
 var mockInterceptorFulfilled: (res: any) => any;
+// eslint-disable-next-line no-var
 var mockInterceptorRejected: (err: any) => Promise<any>;
 
 jest.mock('axios', () => {

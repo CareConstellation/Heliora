@@ -175,5 +175,5 @@ export async function verifyEligibilityProof(
   if (!claimHolds) return false;
   const vkey = verificationKey ?? (await loadVerificationKey(artifact(token.kind, 'vkey.json')));
   const { groth16 } = await import('snarkjs');
-  return groth16.verify(vkey, token.publicSignals, token.proof);
+  return groth16.verify(vkey, token.publicSignals, token.proof as Parameters<typeof groth16.verify>[2]);
 }

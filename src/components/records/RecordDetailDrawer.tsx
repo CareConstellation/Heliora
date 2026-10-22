@@ -14,8 +14,6 @@ import {
   User,
   FileText,
   ExternalLink,
-  ChevronRight,
-  Sparkles,
 } from 'lucide-react';
 
 
@@ -52,17 +50,17 @@ function computeDiff(original: string, updated: string): DiffSegment[] {
 
   while (i < origWords.length || j < updWords.length) {
     if (i < origWords.length && j < updWords.length && origWords[i] === updWords[j]) {
-      segments.push({ type: 'unchanged', value: origWords[i] });
+      segments.push({ type: 'unchanged', value: origWords[i]! });
       i++;
       j++;
-    } else if (j < updWords.length && !origWords.includes(updWords[j], i)) {
-      segments.push({ type: 'added', value: updWords[j] });
+    } else if (j < updWords.length && !origWords.includes(updWords[j]!, i)) {
+      segments.push({ type: 'added', value: updWords[j]! });
       j++;
     } else if (i < origWords.length) {
-      segments.push({ type: 'deleted', value: origWords[i] });
+      segments.push({ type: 'deleted', value: origWords[i]! });
       i++;
     } else {
-      segments.push({ type: 'added', value: updWords[j] });
+      segments.push({ type: 'added', value: updWords[j]! });
       j++;
     }
   }
@@ -132,7 +130,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
     try {
       const parentHash =
         amendments.length > 0
-          ? amendments[amendments.length - 1].amendmentHash
+          ? amendments[amendments.length - 1]!.amendmentHash
           : await sha256(JSON.stringify(record));
 
       const now = new Date().toISOString();
@@ -188,9 +186,11 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
         <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50/50">
           <div>
             <h2 id="record-detail-title" className="text-lg font-bold text-slate-900">
-              Clinical Medical Record
+              Record Details
             </h2>
-            <p className="text-xs text-slate-500">Record ID: {record.id}</p>
+            <p className="text-xs text-slate-500">
+              Clinical Medical Record · Record ID: {record.id}
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -274,6 +274,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                   </div>
                 )}
               <RecordIpfsStatus recordId={record.id} />
+              </dl>
 
               {record.dicomUrl && (
                 <section className="mt-4">
@@ -317,7 +318,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
 
               {/* Chronological list of amendments with differential highlights */}
               <div className="space-y-4">
-                {amendments.map((amend, idx) => {
+                {amendments.map((amend) => {
                   const diffSegments = computeDiff(amend.previousContent, amend.newContent);
 
                   return (

@@ -134,7 +134,6 @@ export function useQueueTracking({
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL;
     let es: EventSource | null = null;
-    let ws: WebSocket | null = null;
 
     if (apiUrl) {
       try {

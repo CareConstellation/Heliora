@@ -4,7 +4,7 @@
  * (Issue #2)
  */
 
-import { Contract, Address, nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
+import { Contract, Address, nativeToScVal } from '@stellar/stellar-sdk';
 
 export interface TimeBoundAccessGrant {
   grantId: string;
@@ -117,13 +117,14 @@ export function buildDelegateAccessInvocation(
   
   const permissionStrings = grant.permissions.map(p => p.toString());
   
-  return contract.call('delegate_time_bound_access', [
-    granterAddr,
-    granteeAddr,
-    grant.recordId,
-    grant.expiresAt,
-    permissionStrings,
-  ]);
+  return contract.call(
+    'delegate_time_bound_access',
+    granterAddr.toScVal(),
+    granteeAddr.toScVal(),
+    nativeToScVal(grant.recordId),
+    nativeToScVal(grant.expiresAt),
+    nativeToScVal(permissionStrings),
+  );
 }
 
 /**

@@ -15,12 +15,12 @@ const LOG = new Uint8Array(256);
     const xtime = (x & 0x80 ? (x << 1) ^ 0x11b : x << 1) & 0xff;
     x = xtime ^ x;
   }
-  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]!;
 })();
 
 function gfMul(a: number, b: number): number {
   if (a === 0 || b === 0) return 0;
-  return EXP[LOG[a] + LOG[b]];
+  return EXP[LOG[a]! + LOG[b]!]!;
 }
 
 export interface Share { x: number; ys: Uint8Array }
@@ -29,10 +29,10 @@ export interface Share { x: number; ys: Uint8Array }
 export function splitSecret(secret: Uint8Array, k: number, n: number): Share[] {
   const shares: Share[] = Array.from({ length: n }, (_, i) => ({ x: i + 1, ys: new Uint8Array(secret.length) }));
   for (let byteIdx = 0; byteIdx < secret.length; byteIdx++) {
-    const coeffs = [secret[byteIdx], ...Array.from({ length: k - 1 }, () => crypto.getRandomValues(new Uint8Array(1))[0])];
+    const coeffs = [secret[byteIdx], ...Array.from({ length: k - 1 }, () => crypto.getRandomValues(new Uint8Array(1))[0] ?? 0)];
     for (const share of shares) {
       let y = 0;
-      for (let c = coeffs.length - 1; c >= 0; c--) y = gfMul(y, share.x) ^ coeffs[c];
+      for (let c = coeffs.length - 1; c >= 0; c--) y = gfMul(y, share.x) ^ coeffs[c]!;
       share.ys[byteIdx] = y;
     }
   }
@@ -41,7 +41,7 @@ export function splitSecret(secret: Uint8Array, k: number, n: number): Share[] {
 
 /** Reconstructs the secret from k or more shares via Lagrange interpolation at x=0. */
 export function combineShares(shares: Share[]): Uint8Array {
-  const len = shares[0].ys.length;
+  const len = shares[0]!.ys.length;
   const out = new Uint8Array(len);
   for (let byteIdx = 0; byteIdx < len; byteIdx++) {
     let acc = 0;
@@ -49,10 +49,10 @@ export function combineShares(shares: Share[]): Uint8Array {
       let num = 1, den = 1;
       for (let j = 0; j < shares.length; j++) {
         if (i === j) continue;
-        num = gfMul(num, shares[j].x);
-        den = gfMul(den, shares[i].x ^ shares[j].x);
+        num = gfMul(num, shares[j]!.x);
+        den = gfMul(den, shares[i]!.x ^ shares[j]!.x);
       }
-      acc ^= gfMul(gfMul(shares[i].ys[byteIdx], num), EXP[(255 - LOG[den]) % 255]);
+      acc ^= gfMul(gfMul(shares[i]!.ys[byteIdx]!, num), EXP[(255 - LOG[den]!) % 255]!);
     }
     out[byteIdx] = acc;
   }

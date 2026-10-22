@@ -23,10 +23,6 @@ function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => v
 
     const focusables = () => el.querySelectorAll<HTMLElement>(focusableSelector);
     const first = () => focusables()[0];
-    const last = () => {
-      const f = focusables();
-      return f[f.length - 1];
-    };
 
     first()?.focus();
 
@@ -73,7 +69,7 @@ export default function ConnectWalletModal({ onClose }: Props) {
   useFocusTrap(modalRef, onClose);
 
   useEffect(() => {
-    ledgerHardwareWallet.checkWebUSBSupport().then(setLedgerSupported);
+    void ledgerHardwareWallet.checkWebUSBSupport().then(setLedgerSupported);
   }, []);
 
   const handleKeyDown = useCallback(
@@ -154,8 +150,7 @@ export default function ConnectWalletModal({ onClose }: Props) {
       const { data } = await api.get<{ role: UserRole }>(`/users/${publicKey}/role`);
       setWallet(publicKey, data.role, 'ledger');
       onClose();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+    } catch {
       setError('Failed to fetch user role. Ensure your address is registered.');
     } finally {
       setLoading(null);
@@ -191,7 +186,7 @@ export default function ConnectWalletModal({ onClose }: Props) {
         {ledgerAccounts ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-slate-600 mb-2">Select a Ledger account:</p>
-            {ledgerAccounts.map((account, idx) => (
+            {ledgerAccounts.map((account) => (
               <button
                 key={account.publicKey}
                 onClick={() => selectLedgerAccount(account.publicKey)}

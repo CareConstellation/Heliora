@@ -48,7 +48,7 @@ interface Props {
   hospitalAddress: string;
 }
 
-export default function AuditTrailVerifier({ hospitalAddress }: Props) {
+export default function AuditTrailVerifier({ hospitalAddress: _hospitalAddress }: Props) {
   const [events] = useState<AuditEvent[]>(sampleEvents);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [proof, setProof] = useState<MerkleProof | null>(null);

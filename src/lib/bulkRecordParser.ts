@@ -51,7 +51,7 @@ export function parseCSV(text: string): BulkRecordImportRow[] {
     throw new Error('CSV file must have a header row and at least one data row.');
   }
 
-  const headers = rows[0].map((h) => h.toLowerCase().replace(/[\s_-]+/g, ''));
+  const headers = rows[0]!.map((h) => h.toLowerCase().replace(/[\s_-]+/g, ''));
   const dateIdx = headers.findIndex((h) => h === 'date');
   const doctorIdx = headers.findIndex(
     (h) => h === 'doctorname' || h === 'doctor' || h === 'physician' || h === 'provider',
@@ -63,13 +63,14 @@ export function parseCSV(text: string): BulkRecordImportRow[] {
   if (dateIdx === -1 || doctorIdx === -1 || diagnosisIdx === -1) {
     throw new Error(
       'CSV must contain at least "date", "doctorName", and "diagnosis" columns. Found: ' +
-        rows[0].join(', '),
+        rows[0]!.join(', '),
     );
   }
 
   const records: BulkRecordImportRow[] = [];
   for (let i = 1; i < rows.length; i++) {
     const cols = rows[i];
+    if (!cols) continue;
     const row: BulkRecordImportRow = {
       date: cols[dateIdx] || '',
       doctorName: cols[doctorIdx] || '',
@@ -191,7 +192,8 @@ export async function validateRowsChunked(
   for (let i = 0; i < total; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
     for (let j = 0; j < chunk.length; j++) {
-      results.push(validateRow(chunk[j], i + j));
+      const row = chunk[j];
+      if (row) results.push(validateRow(row, i + j));
     }
     onProgress?.(results.length, total);
     // Yield to the event loop so UI does not freeze during large 5,000-row imports
@@ -270,6 +272,7 @@ export async function executeBatchImportWithRollback(
       }
 
       const chunk = chunks[i];
+      if (!chunk) continue;
       const res = await bulkImportRecords(patientAddress, chunk);
       if (res.errors && res.errors.length > 0 && res.imported === 0) {
         throw new Error(`Chunk ${i + 1} failed: ${res.errors[0]?.message || 'Server rejected batch chunk'}`);
@@ -316,8 +319,8 @@ export function rowsToMedicalRecords(rows: BulkRecordImportRow[], patientAddress
     date: row.date,
     doctorName: row.doctorName,
     diagnosis: row.diagnosis,
-    prescription: row.prescription,
-    notes: row.notes,
+    ...(row.prescription !== undefined ? { prescription: row.prescription } : {}),
+    ...(row.notes !== undefined ? { notes: row.notes } : {}),
     patientAddress,
   }));
 }

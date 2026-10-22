@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
 import { queryOnChainRole, resolveRoleConflict } from '@/lib/sorobanRbac';
-import { detectRoleTampering, serializeRoleToken, createRoleToken } from '@/lib/roleTokenSigning';
+import { detectRoleTampering, createRoleToken } from '@/lib/roleTokenSigning';
 import type { UserRole } from '@/types';
 
 interface Props {
@@ -67,7 +67,7 @@ export default function ProtectedRoute({ requiredRole, children }: Props) {
       }
     };
 
-    verifyRole();
+    void verifyRole();
 
     return () => {
       cancelled = true;

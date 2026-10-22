@@ -1,48 +1,22 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { encryptFile, exportKey, hashBuffer } from '@/lib/crypto';
+import { sanitizeFile, UnsafeFileError } from '@/lib/fileSanitizer';
+import { computeCid } from '@/lib/ipfs';
 import {
-  encryptFileToEnvelope,
-  exportRecipientPublicKey,
-  loadOrCreateRecipientKeyPair,
-  serializeEnvelope,
-  MAX_ENVELOPE_FILE_BYTES,
-  type RecipientPublicKey,
-} from '@/lib/crypto';
-import { terminate as terminateCryptoWorker } from '@/lib/cryptoWorkerApi';
-import {
-  fetchEncryptionPublicKey,
-  registerEncryptionPublicKey,
+  createIpfsUploadUrl,
+  uploadCiphertextToIpfs,
   uploadEncryptedRecord,
 } from '@/services/api.service';
 import { useToast } from '@/hooks/useToast';
-import { useWalletStore } from '@/store/useWalletStore';
 import type { EncryptedRecord } from '@/types';
 
 const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png', 'application/dicom'];
-// Browsers often report DICOM scans (CT/MRI) with an empty MIME type, so fall back to the extension.
+const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+// Browsers usually report DICOM scans with an empty MIME type; the sanitizer checks the real format from the bytes.
 const isAccepted = (file: File) => ACCEPTED.includes(file.type) || /\.dcm$/i.test(file.name);
-
-/**
- * Recipients the DEK is wrapped to: the patient (owner) and the uploader, if different.
- * The connected wallet uses this device's key pair; any other recipient uses their registered key.
- */
-async function resolveRecipients(
-  patientAddress: string,
-  uploader: string,
-): Promise<RecipientPublicKey[]> {
-  const ownKey = await exportRecipientPublicKey(await loadOrCreateRecipientKeyPair(uploader));
-  await registerEncryptionPublicKey(uploader, ownKey);
-  const recipients: RecipientPublicKey[] = [{ id: uploader, publicKey: ownKey }];
-  if (patientAddress !== uploader) {
-    recipients.push({
-      id: patientAddress,
-      publicKey: await fetchEncryptionPublicKey(patientAddress),
-    });
-  }
-  return recipients;
-}
 
 interface Props {
   patientAddress: string;
@@ -52,36 +26,35 @@ interface Props {
 export default function MedicalRecordUpload({ patientAddress, onUploaded }: Props) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { publicKey } = useWalletStore();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [progress, setProgress] = useState<'idle' | 'encrypting' | 'uploading'>('idle');
-  const [percent, setPercent] = useState(0);
-
-  useEffect(() => {
-    return () => { terminateCryptoWorker(); };
-  }, []);
+  const [progress, setProgress] = useState<'idle' | 'sanitizing' | 'encrypting' | 'uploading'>(
+    'idle',
+  );
+  const [threats, setThreats] = useState<string[]>([]);
 
   const mutation = useMutation({
     mutationFn: async (file: File) => {
       // Validate
       if (!isAccepted(file)) {
-        throw new Error('Unsupported file type. Please upload a PDF, JPEG, PNG, or DICOM scan.');
+        throw new Error('Unsupported file type. Please upload a PDF, JPEG, PNG, or DICOM file.');
       }
-      if (file.size > MAX_ENVELOPE_FILE_BYTES) {
-        throw new Error('File exceeds the 250 MB limit.');
+      if (file.size > MAX_BYTES) {
+        throw new Error('File exceeds the 10 MB limit.');
       }
-      if (!publicKey) throw new Error('Connect your wallet to upload records.');
 
-      // Encrypt as a stream of 64 KiB chunks; the DEK is only ever sent wrapped per recipient.
-      setPercent(0);
+      // Strip identifying metadata and reject active or malformed content before encryption
+      setThreats([]);
+      setProgress('sanitizing');
+      const sanitized = await sanitizeFile(file);
+
+      // Encrypt
       setProgress('encrypting');
-      const recipients = await resolveRecipients(patientAddress, publicKey);
-      const { header, body, contentHash } = await encryptFileToEnvelope(
-        file,
-        recipients,
-        setPercent,
-      );
+      const { encryptedBuffer, iv, key } = await encryptFile(sanitized.file);
+      const exportedKey = await exportKey(key);
+      const contentHash = await hashBuffer(encryptedBuffer);
+      const { cid } = await computeCid(new Uint8Array(encryptedBuffer));
 
+      // Upload the ciphertext to IPFS; the pinning service must return the CID computed locally
       setProgress('uploading');
       const pinnedCid = await uploadCiphertextToIpfs(
         await createIpfsUploadUrl(),
@@ -96,9 +69,11 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       const formData = new FormData();
       formData.append('patientAddress', patientAddress);
       formData.append('fileName', file.name);
-      formData.append('fileType', file.type || 'application/dicom');
+      formData.append('fileType', sanitized.file.type);
       formData.append('contentHash', contentHash);
-      formData.append('encryptedFile', serializeEnvelope(header, body), file.name);
+      formData.append('cid', cid);
+      formData.append('iv', new Blob([iv.buffer as ArrayBuffer]));
+      formData.append('exportedKey', new Blob([exportedKey as ArrayBuffer]));
 
       const record = await uploadEncryptedRecord(formData);
       return { record, removed: sanitized.removed };
@@ -112,7 +87,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
         'success',
       );
       // Optimistic: invalidate records query so the list refreshes
-      queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
       onUploaded?.(record);
       if (inputRef.current) inputRef.current.value = '';
     },
@@ -136,26 +111,17 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <p className="text-3xl mb-2">🔒</p>
       <p className="font-medium text-text-1">Upload Encrypted Medical Record</p>
       <p className="text-xs text-text-3 mt-1">
-        PDF, JPEG, PNG or DICOM · max 250 MB · encrypted before upload
+        PDF, JPEG, PNG or DICOM · max 10 MB · metadata stripped and encrypted before upload
       </p>
 
-      {progress === 'encrypting' && (
-        <div className="mt-3">
-          <div
-            role="progressbar"
-            aria-label="Encryption progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.floor(percent)}
-            className="h-1.5 w-full overflow-hidden rounded-full bg-surface-inset"
-          >
-            <div className="h-full bg-green transition-[width]" style={{ width: `${percent}%` }} />
-          </div>
-          <p className="mt-2 text-sm text-green">Encrypting file… {Math.floor(percent)}%</p>
-        </div>
-      )}
-      {progress === 'uploading' && (
-        <p className="mt-3 text-sm text-green animate-pulse">Uploading…</p>
+      {progress !== 'idle' && (
+        <p className="mt-3 text-sm text-green animate-pulse">
+          {progress === 'sanitizing'
+            ? 'Removing identifying metadata…'
+            : progress === 'encrypting'
+              ? 'Encrypting file…'
+              : 'Uploading to IPFS…'}
+        </p>
       )}
 
       {threats.length > 0 && (

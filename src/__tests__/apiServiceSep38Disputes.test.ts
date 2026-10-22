@@ -11,9 +11,12 @@ import {
   requestDisputeAttestation,
 } from '@/services/api.service';
 
+// `var` keeps these hoisted above the jest.mock factory, which runs before imports.
+// eslint-disable-next-line no-var
 var mockInterceptorRejected: (err: unknown) => Promise<unknown>;
 
 // One shared mock instance stands in for both the backend and the anchor axios instances.
+// eslint-disable-next-line no-var
 var mockApi: Record<'get' | 'post' | 'put' | 'delete', jest.Mock>;
 
 jest.mock('axios', () => {

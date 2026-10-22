@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import DoctorCard from '@/components/doctor/DoctorCard';
-import { Doctor } from '@/types';
+import { type Doctor } from '@/types';
 
 const mockDoctor: Doctor = {
   id: 'doc1',

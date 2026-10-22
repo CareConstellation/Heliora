@@ -243,6 +243,30 @@ export interface BulkImportResponse {
   records: MedicalRecord[];
 }
 
+/** Poseidon commitments an identity issuer or insurer registered for a patient (decimal field elements). */
+export interface EligibilityCommitments {
+  age18?: string;
+  insurance?: string;
+}
+
+/** Normalised pinning state reported by the backend for a record ciphertext. */
+export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
+
+export interface RecordIpfsStorage {
+  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
+  cid: string;
+  pinStatus: IpfsPinStatus;
+  pinnedAt?: string;
+}
+
+/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
+export interface RecordKeyMaterial {
+  key: string;
+  iv: string;
+  fileName: string;
+  fileType: string;
+}
+
 export interface EncounterNote {
   id: string;
   appointmentId: string;

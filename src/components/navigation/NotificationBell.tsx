@@ -4,7 +4,7 @@ import { Bell } from 'lucide-react';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useToast } from '@/hooks/useToast';
-import { NotificationEvent } from '@/hooks/useNotifications';
+import { type NotificationEvent } from '@/hooks/useNotifications';
 
 export default function NotificationBell() {
   const { publicKey } = useWalletStore();
@@ -15,6 +15,8 @@ export default function NotificationBell() {
       access_request: 'info',
       appointment_confirmed: 'success',
       record_shared: 'info',
+      queue_position_update: 'info',
+      doctor_ready: 'success',
     } as const;
     toast(event.message, typeToKind[event.type] ?? 'info');
   };

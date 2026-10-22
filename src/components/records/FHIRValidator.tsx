@@ -20,7 +20,7 @@ export function FHIRValidator({ records, onValidationComplete }: FHIRValidatorPr
     setIsValidating(true);
     try {
       const bundle = convertRecordsToFHIRBundle(records);
-      const errors = validateFHIRBundle(bundle as Record<string, unknown>);
+      const errors = validateFHIRBundle(bundle as unknown as Record<string, unknown>);
 
       setValidationErrors(errors);
       const valid = errors.length === 0;
