@@ -440,3 +440,19 @@ export interface StepAwayContact {
   target: string;
 }
 
+
+/** A single read/decrypt/export of a patient's record, as logged by the backend. */
+export interface RecordAccessEvent {
+  id: string;
+  recordId: string;
+  action: 'read' | 'decrypt' | 'export';
+  timestamp: string;
+  accessorPublicKey: string;
+  accessorName: string;
+  accessorVerified: boolean;
+  accessorSpecialty?: string;
+  authorizationToken: string;
+  breakGlass: boolean;
+  ip?: string;
+  location?: { city?: string; country?: string; lat?: number; lon?: number };
+}

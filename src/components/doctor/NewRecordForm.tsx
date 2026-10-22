@@ -9,7 +9,9 @@ import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import type { DiagnosisCode, MedicationCheckResult } from '@/types';
-import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info } from 'lucide-react';
+import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info, Mic, MicOff, Pause, Play, Square } from 'lucide-react';
+import { useDictation } from '@/hooks/useDictation';
+import { appendDictation } from '@/lib/dictation';
 
 interface Props {
   patientAddress: string;
@@ -28,6 +30,9 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
     acknowledgeRisk: false,
   });
   const [dx, setDx] = useState<DiagnosisCode | null>(null);
+  const dictation = useDictation((text) =>
+    setForm((f) => ({ ...f, notes: appendDictation(f.notes, text) })),
+  );
 
   const [checkResult, setCheckResult] = useState<MedicationCheckResult | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -179,6 +184,7 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       });
       setDx(null);
       setCheckResult(null);
+      dictation.stop();
       onSuccess();
     },
   });
@@ -331,14 +337,59 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       )}
 
       <div>
-        <label className="block text-xs font-medium text-text-2 mb-1">Notes</label>
+        <div className="flex items-center justify-between mb-1">
+          <label htmlFor="record-notes" className="block text-xs font-medium text-text-2">Notes</label>
+          {dictation.supported ? (
+            <div className="flex items-center gap-1.5">
+              {dictation.status === 'listening' && (
+                <span className="inline-flex items-center gap-1 text-2xs text-red-600" aria-live="polite">
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  Listening
+                </span>
+              )}
+              {dictation.status === 'paused' && <span className="text-2xs text-text-3">Paused</span>}
+              {dictation.status === 'idle' && (
+                <button type="button" onClick={dictation.start} className="btn-icon inline-flex items-center gap-1 rounded-md px-2 py-1 text-2xs" aria-label="Start dictation">
+                  <Mic className="w-3.5 h-3.5" /> Dictate
+                </button>
+              )}
+              {dictation.status === 'listening' && (
+                <button type="button" onClick={dictation.pause} className="btn-icon w-7 h-7 rounded-md" aria-label="Pause dictation">
+                  <Pause className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {dictation.status === 'paused' && (
+                <button type="button" onClick={dictation.resume} className="btn-icon w-7 h-7 rounded-md" aria-label="Resume dictation">
+                  <Play className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {dictation.status !== 'idle' && (
+                <button type="button" onClick={dictation.stop} className="btn-icon w-7 h-7 rounded-md" aria-label="Stop dictation">
+                  <Square className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-2xs text-text-3">
+              <MicOff className="w-3 h-3" /> Dictation unsupported in this browser
+            </span>
+          )}
+        </div>
         <textarea
+          id="record-notes"
           rows={3}
           value={form.notes}
           onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
           placeholder="Additional clinical observations, follow-up instructions…"
           className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
         />
+        {dictation.interim && (
+          <p className="mt-1 text-xs italic text-text-3" aria-live="polite">{dictation.interim}…</p>
+        )}
+        {dictation.error && <p className="mt-1 text-xs text-red-600">{dictation.error}</p>}
+        {dictation.status !== 'idle' && (
+          <p className="mt-1 text-2xs text-text-3">Say “period”, “comma”, “next line” or “new paragraph” to format.</p>
+        )}
       </div>
 
       {mutation.isError && (

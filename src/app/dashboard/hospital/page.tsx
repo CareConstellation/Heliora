@@ -31,6 +31,7 @@ import { useWalletStore } from '@/store/useWalletStore';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import NoShowDisputes from '@/components/disputes/NoShowDisputes';
 import AuditTrailVerifier from '@/components/audit/AuditTrailVerifier';
+import MultisigStaging from '@/components/wallet/MultisigStaging';
 import {
   fetchHospitalMetrics,
   fetchStaff,
@@ -150,7 +151,14 @@ function HospitalDashboardContent() {
   const [staffSearch, setStaffSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'staff' | 'admissions' | 'compliance' | 'disputes' | 'audit'>('staff');
+  const [activeTab, setActiveTab] = useState<
+    'staff' | 'admissions' | 'compliance' | 'disputes' | 'audit' | 'multisig'
+  >('staff');
+
+  // A shared multisig deep link (?xdr=) opens straight on the signing tab.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('xdr')) setActiveTab('multisig');
+  }, []);
 
   // Fetch helpers
   const loadMetrics = useCallback(() => {
@@ -389,6 +397,7 @@ function HospitalDashboardContent() {
             { key: 'compliance', label: 'Compliance' },
             { key: 'disputes', label: 'Disputes' },
             { key: 'audit', label: 'Audit Trail' },
+            { key: 'multisig', label: 'Multisig' },
           ] as const
         ).map((tab) => (
           <button
@@ -885,6 +894,11 @@ function HospitalDashboardContent() {
           Audit Trail tab — Merkle inclusion proofs anchored to Stellar
           ══════════════════════════════════════════════════════════ */}
       {activeTab === 'audit' && publicKey && <AuditTrailVerifier hospitalAddress={publicKey} />}
+
+      {/* ══════════════════════════════════════════════════════════
+          Multisig tab — stage, co-sign and broadcast admin transactions
+          ══════════════════════════════════════════════════════════ */}
+      {activeTab === 'multisig' && publicKey && <MultisigStaging signerAddress={publicKey} />}
     </div>
   );
 }

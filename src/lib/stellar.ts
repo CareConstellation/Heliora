@@ -1,4 +1,4 @@
-import { BASE_FEE, Networks, TransactionBuilder, rpc, type xdr } from '@stellar/stellar-sdk';
+import { BASE_FEE, Horizon, Keypair, Networks, Transaction, TransactionBuilder, rpc, type xdr } from '@stellar/stellar-sdk';
 import { signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
@@ -270,4 +270,83 @@ export async function invokeSorobanContract(
     );
   }
   return sent.hash;
+}
+
+// Multisig staging (#88)
+
+/** An account's ed25519 signers and its low/medium/high thresholds, as Horizon reports them. */
+export interface SignerConfig {
+  signers: Array<{ key: string; weight: number }>;
+  thresholds: { low: number; med: number; high: number };
+}
+
+/** Loads `account`'s signer weights and thresholds from Horizon. */
+export async function fetchSignerConfig(account: string): Promise<SignerConfig> {
+  const acc = await callHorizonWithFallback((url) => new Horizon.Server(url).loadAccount(account));
+  return {
+    signers: acc.signers
+      .filter((s) => s.type === 'ed25519_public_key' && s.weight > 0)
+      .map((s) => ({ key: s.key, weight: s.weight })),
+    thresholds: {
+      low: acc.thresholds.low_threshold,
+      med: acc.thresholds.med_threshold,
+      high: acc.thresholds.high_threshold,
+    },
+  };
+}
+
+/** Parses a staged envelope; fee-bump envelopes are rejected since their inner signatures are fixed. */
+export function parseStagedTx(envelopeXdr: string): Transaction {
+  const tx = TransactionBuilder.fromXDR(envelopeXdr.trim(), STELLAR_CONFIG.passphrase);
+  if (!(tx instanceof Transaction)) throw new Error('Fee-bump envelopes cannot be co-signed here.');
+  return tx;
+}
+
+const LOW_OPS = new Set(['allowTrust', 'setTrustLineFlags', 'bumpSequence']);
+
+/**
+ * Threshold the transaction must meet: the highest level any operation requires
+ * (high for signer/threshold changes, low for trust/bump ops, medium otherwise).
+ * ponytail: assumes every operation uses the transaction source account; per-op sources need their own config.
+ */
+export function requiredThreshold(tx: Transaction, { thresholds }: SignerConfig): number {
+  const level = tx.operations.reduce<number>((max, op) => {
+    const needs =
+      op.type === 'setOptions' &&
+      (op.masterWeight !== undefined || op.signer !== undefined ||
+        op.lowThreshold !== undefined || op.medThreshold !== undefined || op.highThreshold !== undefined)
+        ? thresholds.high
+        : LOW_OPS.has(op.type)
+          ? thresholds.low
+          : thresholds.med;
+    return Math.max(max, needs);
+  }, 0);
+  return Math.max(level, 1);
+}
+
+/** Signers whose valid signature is on `tx`, and their combined weight. */
+export function collectedSignatures(tx: Transaction, { signers }: SignerConfig) {
+  const hash = tx.hash();
+  const signedBy = signers.filter(({ key }) => {
+    const kp = Keypair.fromPublicKey(key);
+    const hint = kp.signatureHint();
+    return tx.signatures.some((sig) => sig.hint().equals(hint) && kp.verify(hash, sig.signature()));
+  });
+  return { signedBy: signedBy.map((s) => s.key), weight: signedBy.reduce((sum, s) => sum + s.weight, 0) };
+}
+
+/** Adds signatures from `incoming` (same transaction) that `base` lacks. Throws if the transactions differ. */
+export function mergeSignatures(base: Transaction, incoming: Transaction): Transaction {
+  if (!base.hash().equals(incoming.hash())) throw new Error('These envelopes are for different transactions.');
+  const seen = new Set(base.signatures.map((s) => s.toXDR('base64')));
+  incoming.signatures.forEach((s) => {
+    if (!seen.has(s.toXDR('base64'))) base.signatures.push(s);
+  });
+  return base;
+}
+
+/** Submits a fully signed transaction to Horizon and returns its hash. */
+export async function submitStagedTx(tx: Transaction): Promise<string> {
+  const res = await callHorizonWithFallback((url) => new Horizon.Server(url).submitTransaction(tx));
+  return res.hash;
 }

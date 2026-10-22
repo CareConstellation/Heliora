@@ -36,6 +36,7 @@ import type { MedicalRecord } from '@/types';
 import { EmptyRecordState } from '@/components/records/EmptyRecordState';
 import RecoveryBackupWizard from '@/components/recovery/RecoveryBackupWizard';
 import ClinicalTrialEnrollment from '@/components/trials/ClinicalTrialEnrollment';
+import AccessAuditTimeline from '@/components/records/AccessAuditTimeline';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -570,6 +571,16 @@ export default function PatientDashboard() {
           <h2 className="text-sm font-semibold text-text-1">Emergency Recovery Backup</h2>
           <p className="text-xs text-text-3 mt-0.5 mb-4">Optional · stays on your device</p>
           <RecoveryBackupWizard account={publicKey} />
+        </div>
+      )}
+
+      {/* ── Record access audit trail (#78) ───────────────────────── */}
+      {publicKey && (
+        <div
+          className="rounded-[14px] p-5 mb-6"
+          style={{ background: 'var(--bg-card)', border: '1px solid rgba(255,255,255,0.07)' }}
+        >
+          <AccessAuditTimeline patientAddress={publicKey} />
         </div>
       )}
 

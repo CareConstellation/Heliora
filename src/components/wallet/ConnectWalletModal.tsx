@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWalletStore } from '@/store/useWalletStore';
 import { ledgerHardwareWallet } from '@/lib/ledgerHardwareWallet';
 import type { UserRole } from '@/types';
-import api from '@/services/api.service';
+import api, { authenticateWithSep10 } from '@/services/api.service';
+import { freighterSigner } from '@/lib/stellar';
 
 interface Props {
   onClose: () => void;
@@ -97,13 +98,19 @@ export default function ConnectWalletModal({ onClose }: Props) {
         return;
       }
       const publicKey = await window.freighter.getPublicKey();
+      // SEP-10: prove key ownership before the backend issues a session JWT.
+      await authenticateWithSep10(publicKey, freighterSigner);
       const { data } = await api.get<{ role: UserRole }>(`/users/${publicKey}/role`);
       setWallet(publicKey, data.role);
       onClose();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(
-        msg.includes('rejected') ? 'Connection rejected by user.' : 'Failed to connect Freighter.',
+        msg.includes('rejected')
+          ? 'Connection rejected by user.'
+          : msg.startsWith('SEP-10') || msg.includes('challenge')
+            ? `Wallet authentication failed: ${msg}`
+            : 'Failed to connect Freighter.',
       );
     } finally {
       setLoading(null);

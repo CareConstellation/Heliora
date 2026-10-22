@@ -52,7 +52,7 @@ export function resolveAnchor(homeDomain: string): Promise<AnchorEndpoints> {
 }
 
 /** Reads the `exp` claim (seconds) from a JWT payload. The anchor verifies the signature, not the client. */
-function jwtExpiry(token: string): number {
+export function jwtExpiry(token: string): number {
   const payload = token.split('.')[1];
   if (!payload) throw new Error('SEP-10: malformed token.');
   const json = atob(
@@ -90,22 +90,44 @@ export async function getSep10Token(
     throw new Error('SEP-10: the anchor challenge is for a different Stellar network.');
   }
 
-  // Throws if any SEP-10 challenge requirement is not met.
-  const { clientAccountID } = WebAuth.readChallengeTx(
+  const signed = await signChallenge(
     challenge.transaction,
     anchor.signingKey,
-    STELLAR_CONFIG.passphrase,
     anchor.homeDomain,
     new URL(anchor.webAuthEndpoint).hostname,
+    account,
+    sign,
   );
-  if (clientAccountID !== account)
-    throw new Error('SEP-10: challenge was issued for a different account.');
-
-  const signed = await sign(challenge.transaction, STELLAR_CONFIG.passphrase, account);
   const { data } = await axios.post<{ token: string }>(anchor.webAuthEndpoint, {
     transaction: signed,
   });
 
   tokenCache.set(cacheKey, { token: data.token, exp: jwtExpiry(data.token) });
   return data.token;
+}
+
+/**
+ * Validates a SEP-10 challenge (sequence 0, server signature, time bounds, home and
+ * web-auth domain operations, client account) and signs it with the wallet. The
+ * signed envelope is returned for the auth server only; it is never submitted to the ledger.
+ */
+export async function signChallenge(
+  challengeXdr: string,
+  serverSigningKey: string,
+  homeDomain: string,
+  webAuthDomain: string,
+  account: string,
+  sign: TransactionSigner,
+): Promise<string> {
+  // Throws if any SEP-10 challenge requirement is not met.
+  const { clientAccountID } = WebAuth.readChallengeTx(
+    challengeXdr,
+    serverSigningKey,
+    STELLAR_CONFIG.passphrase,
+    homeDomain,
+    webAuthDomain,
+  );
+  if (clientAccountID !== account)
+    throw new Error('SEP-10: challenge was issued for a different account.');
+  return sign(challengeXdr, STELLAR_CONFIG.passphrase, account);
 }
