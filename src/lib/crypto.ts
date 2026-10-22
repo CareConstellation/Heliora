@@ -972,3 +972,14 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
+
+// Appointment live-chat primitives are kept in a focused module but re-exported
+// here so crypto consumers have one stable entry point.
+export {
+  createChatEphemeralKeyPair,
+  deriveChatSessionKey,
+  encryptChatMessage,
+  decryptChatMessage,
+  destroyChatSession,
+} from './cryptoChat';
+export type { ChatEphemeralKeyPair, EncryptedChatPayload } from './cryptoChat';
