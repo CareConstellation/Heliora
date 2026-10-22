@@ -188,7 +188,11 @@ export async function encryptFile(file: File): Promise<{
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const fileBuffer = await file.arrayBuffer();
 
-  const encryptedBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, fileBuffer);
+  const encryptedBuffer = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new Uint8Array(fileBuffer),
+  );
 
   return { encryptedBuffer, iv, key };
 }
@@ -972,3 +976,14 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
+
+// Appointment live-chat primitives are kept in a focused module but re-exported
+// here so crypto consumers have one stable entry point.
+export {
+  createChatEphemeralKeyPair,
+  deriveChatSessionKey,
+  encryptChatMessage,
+  decryptChatMessage,
+  destroyChatSession,
+} from './cryptoChat';
+export type { ChatEphemeralKeyPair, EncryptedChatPayload } from './cryptoChat';
