@@ -6,6 +6,10 @@ import { shareRecord } from '@/services/api.service';
 import RecordDetailDrawer from './RecordDetailDrawer';
 import ConsentReceiptModal from './ConsentReceiptModal';
 import { useToast } from '@/hooks/useToast';
+import { useContactResolver } from '@/hooks/useAddressBook';
+import { resolveAddressInput } from '@/lib/addressBook';
+import ContactAddressInput from '@/components/contacts/ContactAddressInput';
+import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 
 interface Props {
   record: MedicalRecord;
@@ -15,16 +19,28 @@ function RecordCard({ record }: Props) {
   const { toast } = useToast();
   const [showDrawer, setShowDrawer] = useState(false);
   const [showConsentModal, setShowConsentModal] = useState(false);
+  const { contacts } = useContactResolver();
   const [sharing, setSharing] = useState(false);
-  const [shareInfo, setShareInfo] = useState<{ token: string; expiresAt: string } | null>(null);
+  const [showShareForm, setShowShareForm] = useState(false);
+  const [provider, setProvider] = useState('');
+  const [shareInfo, setShareInfo] = useState<{
+    token: string;
+    expiresAt: string;
+    providerAddress: string;
+  } | null>(null);
 
   async function handleShare() {
-    const provider = prompt('Enter provider Stellar address:');
-    if (!provider) return;
+    const providerAddress = resolveAddressInput(provider, contacts);
+    if (!providerAddress) {
+      toast('Enter a valid Stellar address or the name of a trusted contact.', 'error');
+      return;
+    }
     setSharing(true);
     try {
-      const result = await shareRecord(record.id, provider);
-      setShareInfo({ token: result.token, expiresAt: result.expiresAt });
+      const result = await shareRecord(record.id, providerAddress);
+      setShareInfo({ token: result.token, expiresAt: result.expiresAt, providerAddress });
+      setShowShareForm(false);
+      setProvider('');
     } catch {
       toast('Failed to generate share token.', 'error');
     } finally {
@@ -41,6 +57,8 @@ function RecordCard({ record }: Props) {
 
         {shareInfo && (
           <div className="mt-2 rounded-md bg-green-50 p-2 text-xs text-green-700">
+            Shared with <ResolvedAddress address={shareInfo.providerAddress} />
+            <br />
             Token: <span className="font-mono break-all">{shareInfo.token}</span>
             <br />
             Expires: {new Date(shareInfo.expiresAt).toLocaleString()}
@@ -55,11 +73,12 @@ function RecordCard({ record }: Props) {
             View
           </button>
           <button
-            onClick={handleShare}
+            onClick={() => setShowShareForm((open) => !open)}
             disabled={sharing}
+            aria-expanded={showShareForm}
             className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover disabled:opacity-50"
           >
-            {sharing ? 'Sharing…' : 'Share'}
+            Share
           </button>
           <button
             onClick={() => setShowConsentModal(true)}
@@ -68,6 +87,30 @@ function RecordCard({ record }: Props) {
             Consent Receipt
           </button>
         </div>
+
+        {showShareForm && (
+          <form
+            className="mt-3 flex items-start gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleShare();
+            }}
+          >
+            <ContactAddressInput
+              id={`share-provider-${record.id}`}
+              label="Provider Stellar address"
+              value={provider}
+              onChange={setProvider}
+            />
+            <button
+              type="submit"
+              disabled={sharing || !provider.trim()}
+              className="rounded-md bg-green px-3 py-2 text-xs font-medium text-[#030D09] hover:bg-green-600 disabled:opacity-50"
+            >
+              {sharing ? 'Sharing…' : 'Generate token'}
+            </button>
+          </form>
+        )}
       </div>
 
       {showDrawer && <RecordDetailDrawer record={record} onClose={() => setShowDrawer(false)} />}

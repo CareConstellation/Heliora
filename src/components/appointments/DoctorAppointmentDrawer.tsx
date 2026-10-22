@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { Appointment, PatientIntakeSummary } from '@/types';
+import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 import {
   Calendar,
   Clock,
@@ -66,7 +67,11 @@ export default function DoctorAppointmentDrawer({ appointment, onClose }: Props)
                 <User className="w-3.5 h-3.5 text-text-3" />
                 {appointment.patientName ? appointment.patientName : 'Patient Address'}
               </span>
-              <span className="font-mono text-2xs text-text-3">{appointment.patientAddress}</span>
+              <ResolvedAddress
+                address={appointment.patientAddress}
+                fallback={appointment.patientAddress}
+                className="text-2xs text-text-3"
+              />
             </div>
             <div className="flex items-center gap-4 text-xs text-text-2 pt-1 border-t border-border">
               <span className="flex items-center gap-1">

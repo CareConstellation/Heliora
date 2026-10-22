@@ -29,6 +29,7 @@ import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
 import AvailabilityConfig from '@/components/doctor/AvailabilityConfig';
 import SlotBatchPublisher from '@/components/doctor/SlotBatchPublisher';
+import ResidentSupervision from '@/components/doctor/ResidentSupervision';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -217,6 +218,11 @@ export default function DoctorDashboard() {
             New Record
           </button>
         </div>
+      </div>
+
+      {/* ── Resident supervision / delegated proxy mode (#118) ───── */}
+      <div className="mb-6">
+        <ResidentSupervision />
       </div>
 
       {/* ── Urgent alert ─────────────────────────────────────────── */}

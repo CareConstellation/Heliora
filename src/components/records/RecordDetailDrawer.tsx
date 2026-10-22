@@ -24,8 +24,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import RecordDeletionModal from './RecordDeletionModal';
-import { SUPPORTED_LANGUAGES, MANDATORY_TRANSLATION_WATERMARK, translateMedicalRecord } from '@/lib/translation';
-import type { SupportedLanguage } from '@/lib/translation';
+import { SUPPORTED_LANGUAGES, MANDATORY_TRANSLATION_WATERMARK, translateMedicalRecord } from '@/lib/clinicalTranslation';
+import type { SupportedLanguage } from '@/lib/clinicalTranslation';
 
 const VaccinationProofPanel = dynamic(() => import('./VaccinationProofPanel'), {
   ssr: false,

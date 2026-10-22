@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, ShieldAttestation, ShieldEnrollment, DelegatedProxyToken, EncounterDraft, SupervisorCosignature, EncryptedAddressBookBackup } from '@/types';
 import { verifyDelegationVoucher, type DelegationVoucher, type EnvelopeHeader, type EnvelopeRecipient } from '@/lib/crypto';
 
 /**
@@ -573,3 +573,92 @@ export const redeemDelegationVoucher = (voucher: DelegationVoucher) => {
 export const verifyDelegationVoucherClient = (voucher: DelegationVoucher) =>
   verifyDelegationVoucher(voucher);
 
+/** Resolves to `null` instead of rejecting when the API answers 404. */
+const nullOn404 = (error: ApiError) => {
+  if (error.status === 404) return null;
+  throw error;
+};
+
+// Anti-phishing security shield (#119)
+
+/**
+ * Register the salted fingerprint of the user's anti-phishing shield.
+ * @param enrollment - Fingerprint, origin and timestamp, signed by the wallet (SEP-53).
+ * @throws {ApiError} On network failure, an invalid wallet signature or non-2xx response.
+ */
+export const registerShieldFingerprint = (enrollment: ShieldEnrollment) =>
+  api.post<{ registered: boolean }>('/auth/anti-phishing', enrollment).then((r) => r.data);
+
+/**
+ * Fetch a fresh attestation of the shield fingerprint registered for `publicKey`,
+ * signed by the Heliora auth signing key for `origin`.
+ * @returns The attestation, or `null` when the account has no registered shield.
+ * @throws {ApiError} On network failure or non-2xx response other than 404.
+ */
+export const fetchShieldAttestation = (publicKey: string, origin: string) =>
+  api
+    .get<ShieldAttestation>(`/auth/anti-phishing/${publicKey}/attestation`, { params: { origin } })
+    .then((r) => r.data)
+    .catch(nullOn404);
+
+// Clinical supervisor delegated proxy access (#118)
+
+const proxyHeader = (tokenId: string) => ({ headers: { 'X-Proxy-Token': tokenId } });
+
+/**
+ * Request a short-lived proxy token to review a resident's encounter drafts.
+ * The backend checks that `supervisorAddress` is an attending of the resident.
+ * @throws {ApiError} On network failure, a missing supervision relationship or non-2xx response.
+ */
+export const requestDelegatedProxyToken = (supervisorAddress: string, residentAddress: string) =>
+  api
+    .post<DelegatedProxyToken>('/auth/proxy-tokens', { supervisorAddress, residentAddress })
+    .then((r) => r.data);
+
+/** Revoke a proxy token before it expires. */
+export const revokeDelegatedProxyToken = (tokenId: string) =>
+  api.delete(`/auth/proxy-tokens/${tokenId}`).then(() => undefined);
+
+/** Encounter drafts of the resident the proxy token is bound to. */
+export const fetchProxyEncounterDrafts = (tokenId: string) =>
+  api.get<EncounterDraft[]>('/encounters/drafts', proxyHeader(tokenId)).then((r) => r.data);
+
+/**
+ * Log a supervisor co-signature and mark the draft as co-signed.
+ * @returns The updated draft.
+ * @throws {ApiError} On network failure, an expired token, a content hash mismatch or non-2xx response.
+ */
+export const submitSupervisorCosignature = (cosignature: SupervisorCosignature) =>
+  api
+    .post<EncounterDraft>(
+      `/encounters/drafts/${cosignature.draftId}/cosign`,
+      cosignature,
+      proxyHeader(cosignature.proxyTokenId),
+    )
+    .then((r) => r.data);
+
+/** Co-signatures logged for a draft, oldest first. */
+export const fetchCosignatureLog = (draftId: string, tokenId: string) =>
+  api
+    .get<SupervisorCosignature[]>(`/encounters/drafts/${draftId}/cosignatures`, proxyHeader(tokenId))
+    .then((r) => r.data);
+
+// Trusted clinician address book (#116)
+
+/**
+ * Look up a registered provider by Stellar address, to verify an address book entry.
+ * @returns The provider, or `null` when the address is not registered.
+ */
+export const fetchDoctorByAddress = (address: string) =>
+  api.get<Doctor>(`/doctors/by-address/${address}`).then((r) => r.data).catch(nullOn404);
+
+/** Upload the encrypted address book backup. The server only ever sees ciphertext. */
+export const uploadAddressBookBackup = (owner: string, backup: EncryptedAddressBookBackup) =>
+  api.put(`/backups/address-book/${owner}`, backup).then(() => undefined);
+
+/** Download the encrypted address book backup, or `null` when there is none. */
+export const fetchAddressBookBackup = (owner: string) =>
+  api
+    .get<EncryptedAddressBookBackup>(`/backups/address-book/${owner}`)
+    .then((r) => r.data)
+    .catch(nullOn404);
