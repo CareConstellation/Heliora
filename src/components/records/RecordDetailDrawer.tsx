@@ -16,7 +16,9 @@ import {
   ExternalLink,
   ChevronRight,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
+import RecordDeletionModal from './RecordDeletionModal';
 
 
 interface Props {
@@ -75,6 +77,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<'record' | 'amendments'>('record');
   const [amendments, setAmendments] = useState<ClinicalNoteAmendment[]>([]);
   const [showAmendmentForm, setShowAmendmentForm] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Form state for creating a new amendment
   const [amendField, setAmendField] = useState<'notes' | 'diagnosis' | 'prescription' | 'addendum'>('notes');
@@ -283,7 +286,7 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                 </section>
               )}
 
-              <div className="pt-2">
+              <div className="pt-2 flex flex-col gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -294,6 +297,14 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
                 >
                   <PlusCircle className="w-4 h-4 text-green" />
                   Issue Clinical Amendment / Addendum
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteModal(true)}
+                  className="w-full rounded-lg border border-red-200 bg-red-50 py-2.5 text-xs font-semibold text-red-700 hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4 text-red-600" />
+                  Delete / Archive Record (Hardware Key / WebAuthn Required)
                 </button>
               </div>
             </div>
@@ -518,6 +529,16 @@ export default function RecordDetailDrawer({ record, onClose }: Props) {
           )}
         </div>
       </div>
+
+      <RecordDeletionModal
+        record={record}
+        isOpen={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirmDeletion={async (recordId) => {
+          localStorage.setItem(`heliora_deleted_${recordId}`, 'true');
+          onClose();
+        }}
+      />
     </div>
   );
 }

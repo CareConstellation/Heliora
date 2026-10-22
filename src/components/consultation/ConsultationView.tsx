@@ -6,24 +6,7 @@ import MedicalRecordPanel from './MedicalRecordPanel';
 import EncounterNotes from './EncounterNotes';
 import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
-import ReconnectionOverlay from './ReconnectionOverlay';
-import LiveSubtitles from './LiveSubtitles';
-import TranscriptionConsentModal from './TranscriptionConsentModal';
-import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
-import {
-  isSpeechRecognitionSupported,
-  getSpeechRecognitionConstructor,
-  summarizeClinicalEncounter,
-  type ISpeechRecognition,
-  type ISpeechRecognitionEvent,
-} from '@/lib/transcription';
-import type {
-  TranscriptSegment,
-  TranscriptionConsentState,
-  ReconnectionStatus,
-  ClinicalDraftNote,
-} from '@/types';
-import { Mic, MicOff, PhoneOff, CheckCircle2 } from 'lucide-react';
+import EncryptedChat from './EncryptedChat';
 
 interface Props {
   appointmentId: string;
@@ -32,7 +15,7 @@ interface Props {
   doctorName: string;
 }
 
-type Tab = 'records' | 'notes';
+type Tab = 'records' | 'notes' | 'chat';
 
 const MIN_RATIO = 0.25;
 const MAX_RATIO = 0.75;
@@ -498,8 +481,8 @@ export default function ConsultationView({
           className="flex flex-col overflow-hidden"
           style={{ width: rightWidth }}
         >
-          <div className="flex border-b border-border shrink-0 bg-surface-card">
-            {(['records', 'notes'] as Tab[]).map((tab) => (
+          <div className="flex border-b border-border shrink-0">
+            {(['records', 'notes', 'chat'] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -509,7 +492,7 @@ export default function ConsultationView({
                     : 'text-text-3 hover:text-text-1'
                 }`}
               >
-                {tab === 'records' ? 'Medical Records' : 'Encounter Notes'}
+                {tab === 'records' ? 'Medical Records' : tab === 'notes' ? 'Encounter Notes' : 'Secure Chat'}
               </button>
             ))}
           </div>
@@ -524,6 +507,7 @@ export default function ConsultationView({
                 initialDraftContent={draftNote?.notes}
               />
             )}
+            {activeTab === 'chat' && <EncryptedChat appointmentId={appointmentId} />}
           </div>
         </div>
       </div>

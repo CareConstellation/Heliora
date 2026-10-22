@@ -17,7 +17,8 @@ import { createAppointment, fetchSubsidyTier } from '@/services/api.service';
 import FeeInvoice from '@/components/appointments/FeeInvoice';
 import { computeFeeInvoice } from '@/lib/feeSubsidy';
 import { useWalletStore } from '@/store/useWalletStore';
-import { STELLAR_CONFIG } from '@/lib/stellar';
+import { STELLAR_CONFIG, type StrictReceivePathQuote } from '@/lib/stellar';
+import PathPaymentSelector from '@/components/appointments/PathPaymentSelector';
 import { withVideoRoom } from '@/lib/video';
 import type {
   Doctor,
@@ -48,6 +49,7 @@ function BookingFlow() {
   const [confirmed, setConfirmed] = useState<Appointment | null>(null);
   // Firm SEP-38 quote held across checkout steps until it expires or is used.
   const [quote, setQuote] = useState<Sep38FirmQuote | null>(null);
+  const [pathPaymentQuote, setPathPaymentQuote] = useState<StrictReceivePathQuote | null>(null);
 
   // Validation state
   const [slotError, setSlotError] = useState('');
@@ -97,18 +99,27 @@ function BookingFlow() {
           STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
         const account = await server.loadAccount(publicKey);
+        const paymentOp = pathPaymentQuote
+          ? Operation.pathPaymentStrictReceive({
+              sendAsset: pathPaymentQuote.sourceAsset,
+              sendMax: pathPaymentQuote.sendMax,
+              destination: doctor.address,
+              destAsset: pathPaymentQuote.destAsset,
+              destAmount: String(fee),
+              path: pathPaymentQuote.path,
+            })
+          : Operation.payment({
+              destination: doctor.address,
+              asset: Asset.native(),
+              amount: String(fee),
+            });
+
         const tx = new TransactionBuilder(account, {
           fee: '100',
           networkPassphrase:
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
         })
-          .addOperation(
-            Operation.payment({
-              destination: doctor.address,
-              asset: Asset.native(),
-              amount: String(fee),
-            }),
-          )
+          .addOperation(paymentOp)
           .setTimeout(30)
           .build();
 
@@ -373,6 +384,14 @@ function BookingFlow() {
                 ))}
               </div>
             </div>
+
+            {form.paymentMethod === 'stellar' && (
+              <PathPaymentSelector
+                destAmount={String(effectiveFee)}
+                selectedQuote={pathPaymentQuote}
+                onQuoteSelect={setPathPaymentQuote}
+              />
+            )}
 
             {form.paymentMethod === 'anchor' && (
               <AnchorQuote
