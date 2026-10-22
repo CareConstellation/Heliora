@@ -1,5 +1,3 @@
-import type { TransactionBuilder } from '@stellar/stellar-sdk';
-
 export interface LedgerTransportError extends Error {
   statusCode?: number;
 }
@@ -141,7 +139,7 @@ export const ledgerHardwareWallet = {
     try {
       const accounts = await this.listAccounts();
       return accounts.length > 0;
-    } catch (err) {
+    } catch {
       return false;
     }
   },

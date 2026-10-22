@@ -1,4 +1,4 @@
-import { Keypair, StrKey } from 'stellar-sdk';
+import type { Keypair } from '@stellar/stellar-sdk';
 
 interface BreakGlassKey {
   keyId: string;
@@ -77,9 +77,7 @@ class BreakGlassMultiSigProtocol {
       role,
       isActive: true,
       createdAt: Math.floor(Date.now() / 1000),
-      metadata: {
-        hospital,
-      },
+      ...(hospital ? { metadata: { hospital } } : {}),
     };
   }
 
@@ -114,7 +112,7 @@ class BreakGlassMultiSigProtocol {
       status: 'pending',
       createdAt: now,
       expiresAt,
-      recordAccessRequested: recordsToAccess,
+      ...(recordsToAccess ? { recordAccessRequested: recordsToAccess } : {}),
     };
   }
 
@@ -124,7 +122,6 @@ class BreakGlassMultiSigProtocol {
    */
   private calculateRequiredSignatures(initiatorRole: string, urgencyLevel: 1 | 2 | 3): number {
     const baseSignatures = 2;
-    const initiatorHierarchy = this.ROLE_HIERARCHY[initiatorRole] || 0;
 
     if (urgencyLevel === 3) {
       return Math.max(1, baseSignatures - 1);
@@ -298,7 +295,7 @@ class BreakGlassMultiSigProtocol {
    * Revoke break-glass key
    * Disables key from future emergency access requests
    */
-  revokeBreakGlassKey(key: BreakGlassKey, revokedBy: Keypair): BreakGlassKey {
+  revokeBreakGlassKey(key: BreakGlassKey, _revokedBy: Keypair): BreakGlassKey {
     return {
       ...key,
       isActive: false,
@@ -395,10 +392,5 @@ class BreakGlassMultiSigProtocol {
   }
 }
 
-export {
-  BreakGlassMultiSigProtocol,
-  BreakGlassKey,
-  BreakGlassRequest,
-  BreakGlassApproval,
-  BreakGlassAuditLog,
-};
+export { BreakGlassMultiSigProtocol };
+export type { BreakGlassKey, BreakGlassRequest, BreakGlassApproval, BreakGlassAuditLog };

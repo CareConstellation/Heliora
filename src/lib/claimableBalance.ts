@@ -1,9 +1,8 @@
 import {
+  Claimant,
   Operation,
-  Asset,
-  Keypair,
+  type Asset,
   TransactionBuilder,
-  Networks,
 } from '@stellar/stellar-sdk';
 
 export interface ClaimPredicateConfig {
@@ -68,10 +67,9 @@ export function createClaimableBalanceOperation(
   });
 
   return Operation.createClaimableBalance({
-    claimant: config.claimant,
+    claimants: [new Claimant(config.claimant, predicate)],
     amount: config.amount,
     asset: config.asset,
-    claimPredicates: [predicate],
   });
 }
 

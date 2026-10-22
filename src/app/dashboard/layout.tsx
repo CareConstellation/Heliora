@@ -23,7 +23,6 @@ import {
   X,
   BookUser,
 } from 'lucide-react';
-import NotificationBell from '@/components/navigation/NotificationBell';
 import ContractUpgradeBanner from '@/components/layout/ContractUpgradeBanner';
 import DelegatedProxyBanner, {
   ExitProxyModeButton,

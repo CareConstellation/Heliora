@@ -1,12 +1,11 @@
 import {
-  Transaction,
-  FeeBumpTransaction,
-  Keypair,
+  type Transaction,
+  type FeeBumpTransaction,
+  type Keypair,
   StrKey,
   BASE_FEE,
-  Networks,
   TransactionBuilder,
-} from 'stellar-sdk';
+} from '@stellar/stellar-sdk';
 
 interface FeeBumpConfig {
   baseTransaction: Transaction;
@@ -42,14 +41,15 @@ class SEP0029FeeBumpSponsorship {
     transaction: FeeBumpTransaction;
     metadata: FeeBumpMetadata;
   } {
-    const originalFee = config.baseTransaction.fee;
+    const originalFee = Number(config.baseTransaction.fee);
     const newFee = this.calculateOptimalFee(originalFee, config.baseFee);
 
-    const feeBumpTransaction = new FeeBumpTransaction({
-      fee: newFee.toString(),
-      feeAccount: config.feeAccount.publicKey(),
-      innerTransaction: config.baseTransaction,
-    });
+    const feeBumpTransaction = TransactionBuilder.buildFeeBumpTransaction(
+      config.feeAccount,
+      newFee.toString(),
+      config.baseTransaction,
+      config.networkPassphrase,
+    );
 
     const metadata: FeeBumpMetadata = {
       originalFee,
@@ -82,19 +82,12 @@ class SEP0029FeeBumpSponsorship {
       transactionHash: string;
     };
   } {
-    const sponsorFee = Math.ceil(baseTransaction.fee * 1.2);
+    const sponsorFee = Math.ceil(Number(baseTransaction.fee) * 1.2);
 
-    const builder = new TransactionBuilder(sponsor.getPublicKey(), {
+    const sponsoredTransaction = TransactionBuilder.cloneFrom(baseTransaction, {
       fee: sponsorFee.toString(),
       networkPassphrase,
-      v1: true,
-    });
-
-    baseTransaction.operations.forEach((op) => {
-      builder.addOperation(op);
-    });
-
-    const sponsoredTransaction = builder.build();
+    }).build();
 
     return {
       transaction: sponsoredTransaction,
@@ -110,12 +103,14 @@ class SEP0029FeeBumpSponsorship {
     transaction: Transaction,
     sponsor: Keypair,
     operationIndices: number[],
-    networkPassphrase: string,
+    _networkPassphrase: string,
   ): {
     transaction: Transaction;
     sponsoredOperations: SponsoredOperation[];
   } {
-    const sponsorFeePerOp = Math.ceil(transaction.fee / transaction.operations.length);
+    const sponsorFeePerOp = Math.ceil(
+      Number(transaction.fee) / Math.max(1, transaction.operations.length),
+    );
 
     const sponsoredOps: SponsoredOperation[] = operationIndices.map((index) => ({
       operationIndex: index,
@@ -132,13 +127,13 @@ class SEP0029FeeBumpSponsorship {
 
   validateFeeBumpTransaction(
     feeBumpTx: FeeBumpTransaction,
-    minFeeIncrease: number = BASE_FEE,
+    minFeeIncrease: number = Number(BASE_FEE),
   ): {
     valid: boolean;
     reason?: string;
   } {
     const innerTx = feeBumpTx.innerTransaction;
-    const feeIncrease = feeBumpTx.fee - innerTx.fee;
+    const feeIncrease = Number(feeBumpTx.fee) - Number(innerTx.fee);
 
     if (feeIncrease < minFeeIncrease) {
       return {
@@ -147,7 +142,7 @@ class SEP0029FeeBumpSponsorship {
       };
     }
 
-    if (!StrKey.isValidEd25519PublicKey(feeBumpTx.feeAccount)) {
+    if (!StrKey.isValidEd25519PublicKey(feeBumpTx.feeSource)) {
       return {
         valid: false,
         reason: 'Invalid fee account public key',
@@ -168,7 +163,7 @@ class SEP0029FeeBumpSponsorship {
     withLoadFactor: number;
     withBuffer: number;
   } {
-    const baseCost = transaction.fee * baseFee;
+    const baseCost = Number(transaction.fee) * baseFee;
     const withLoadFactor = Math.ceil(baseCost * expectedLoadFactor);
     const withBuffer = Math.ceil(withLoadFactor * 1.5);
 
@@ -184,8 +179,7 @@ class SEP0029FeeBumpSponsorship {
   }
 
   deserializeFeeBumpTransaction(xdr: string, networkPassphrase: string): FeeBumpTransaction {
-    const tx = Transaction.fromXDR(xdr, networkPassphrase) as FeeBumpTransaction;
-    return tx;
+    return TransactionBuilder.fromXDR(xdr, networkPassphrase) as FeeBumpTransaction;
   }
 
   canSponsor(
@@ -256,7 +250,7 @@ class SEP0029FeeBumpSponsorship {
     transaction: FeeBumpTransaction;
     metadata: FeeBumpMetadata;
   } {
-    const baseFee = isUrgent ? BASE_FEE * 2 : BASE_FEE;
+    const baseFee = isUrgent ? Number(BASE_FEE) * 2 : Number(BASE_FEE);
     const operationCount = baseTransaction.operations.length;
     const priorityMultiplier = isUrgent ? 2.0 : 1.2;
 
@@ -269,10 +263,5 @@ class SEP0029FeeBumpSponsorship {
   }
 }
 
-export {
-  SEP0029FeeBumpSponsorship,
-  FeeBumpConfig,
-  SponsorshipConfig,
-  SponsoredOperation,
-  FeeBumpMetadata,
-};
+export { SEP0029FeeBumpSponsorship };
+export type { FeeBumpConfig, SponsorshipConfig, SponsoredOperation, FeeBumpMetadata };

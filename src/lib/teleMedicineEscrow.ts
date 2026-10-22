@@ -145,13 +145,14 @@ export function buildLockEscrowInvocation(contractId: string, escrow: TeleMedici
   const patientAddr = new Address(escrow.patientAddress);
   const doctorAddr = new Address(escrow.doctorAddress);
   
-  return contract.call('lock_consultation_escrow', [
-    patientAddr,
-    doctorAddr,
-    escrow.consultationId,
-    escrow.amountStroops,
-    escrow.releaseCondition.expiresAt,
-  ]);
+  return contract.call(
+    'lock_consultation_escrow',
+    patientAddr.toScVal(),
+    doctorAddr.toScVal(),
+    nativeToScVal(escrow.consultationId),
+    nativeToScVal(escrow.amountStroops),
+    nativeToScVal(escrow.releaseCondition.expiresAt),
+  );
 }
 
 /**
@@ -165,7 +166,7 @@ export function buildReleaseEscrowInvocation(
   const contract = new Contract(contractId);
   const doctorAddr = new Address(doctorAddress);
   
-  return contract.call('release_escrow', [escrowId, doctorAddr]);
+  return contract.call('release_escrow', nativeToScVal(escrowId), doctorAddr.toScVal());
 }
 
 /**
@@ -175,7 +176,7 @@ export function buildRefundEscrowInvocation(contractId: string, escrowId: string
   const contract = new Contract(contractId);
   const patientAddr = new Address(patientAddress);
   
-  return contract.call('refund_escrow', [escrowId, patientAddr]);
+  return contract.call('refund_escrow', nativeToScVal(escrowId), patientAddr.toScVal());
 }
 
 /**

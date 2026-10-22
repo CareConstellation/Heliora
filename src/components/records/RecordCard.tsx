@@ -1,10 +1,9 @@
 'use client';
 
-import { useState, memo } from 'react';
+import { memo, useState } from 'react';
 import type { MedicalRecord } from '@/types';
 import { shareRecord } from '@/services/api.service';
 import RecordDetailDrawer from './RecordDetailDrawer';
-import ConsentReceiptModal from './ConsentReceiptModal';
 import { useToast } from '@/hooks/useToast';
 import { useContactResolver } from '@/hooks/useAddressBook';
 import { resolveAddressInput } from '@/lib/addressBook';
@@ -18,8 +17,6 @@ interface Props {
 function RecordCard({ record }: Props) {
   const { toast } = useToast();
   const [showDrawer, setShowDrawer] = useState(false);
-  const [showConsentModal, setShowConsentModal] = useState(false);
-  const { contacts } = useContactResolver();
   const [sharing, setSharing] = useState(false);
   const [showShareForm, setShowShareForm] = useState(false);
   const [provider, setProvider] = useState('');
@@ -65,7 +62,7 @@ function RecordCard({ record }: Props) {
           </div>
         )}
 
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-3 flex gap-2">
           <button
             onClick={() => setShowDrawer(true)}
             className="rounded-md bg-green px-3 py-1.5 text-xs font-medium text-[#030D09] hover:bg-green-600"
@@ -79,12 +76,6 @@ function RecordCard({ record }: Props) {
             className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover disabled:opacity-50"
           >
             Share
-          </button>
-          <button
-            onClick={() => setShowConsentModal(true)}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover"
-          >
-            Consent Receipt
           </button>
         </div>
 
@@ -114,12 +105,8 @@ function RecordCard({ record }: Props) {
       </div>
 
       {showDrawer && <RecordDetailDrawer record={record} onClose={() => setShowDrawer(false)} />}
-      {showConsentModal && (
-        <ConsentReceiptModal record={record} onClose={() => setShowConsentModal(false)} />
-      )}
     </>
   );
 }
 
 export default memo(RecordCard);
-

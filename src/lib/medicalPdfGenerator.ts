@@ -1,4 +1,4 @@
-import { PDFDocument, PDFPage, rgb } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import type { MedicalRecord } from '@/types';
 
 export interface PDFGenerationOptions {
@@ -43,7 +43,7 @@ export async function generateMedicalPDF(
   options: PDFGenerationOptions,
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([612, 792]); // Letter size: 8.5" x 11"
+  let page = pdfDoc.addPage([612, 792]); // Letter size: 8.5" x 11"
   const { height } = page.getSize();
   let yPosition = height - 50;
 
@@ -87,8 +87,7 @@ export async function generateMedicalPDF(
 
   for (const record of records) {
     if (yPosition < 100) {
-      const newPage = pdfDoc.addPage([612, 792]);
-      page.getSize();
+      page = pdfDoc.addPage([612, 792]);
       yPosition = 750;
     }
 
@@ -110,8 +109,7 @@ export async function generateMedicalPDF(
       const notesLines = (record.notes || '').split('\n');
       for (const line of notesLines) {
         if (yPosition < 100) {
-          const newPage = pdfDoc.addPage([612, 792]);
-          page.getSize();
+          page = pdfDoc.addPage([612, 792]);
           yPosition = 750;
         }
         drawText(line.substring(0, 80), 60, yPosition, 9);

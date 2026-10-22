@@ -1,16 +1,13 @@
 'use client';
 
-import { useState } from 'react';
 import type { Appointment, PatientIntakeSummary } from '@/types';
 import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 import {
   Calendar,
   Clock,
   User,
-  Shield,
   Lock,
   AlertTriangle,
-  CheckCircle2,
   FileText,
   Activity,
   HeartPulse,

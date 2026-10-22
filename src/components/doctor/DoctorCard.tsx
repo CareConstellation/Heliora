@@ -1,8 +1,6 @@
 'use client';
 
-import { BadgeCheck, BookUser } from 'lucide-react';
-import { Doctor } from '@/types';
-import { useContactResolver } from '@/hooks/useAddressBook';
+import { type Doctor } from '@/types';
 
 interface Props {
   doctor: Doctor;

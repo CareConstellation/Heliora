@@ -243,35 +243,28 @@ export interface BulkImportResponse {
   records: MedicalRecord[];
 }
 
-export type BiometricMetricCategory = 'resting_heart_rate' | 'step_count' | 'sleep';
-
-export interface HelioraObservation {
-  id: string;
-  category: BiometricMetricCategory;
-  code: string;
-  display: string;
-  date: string;
-  value: number;
-  unit: string;
-  source: 'Apple Health' | 'Google Fit';
-  rawRecordCount?: number | undefined;
-  metadata?: Record<string, unknown> | undefined;
+/** Poseidon commitments an identity issuer or insurer registered for a patient (decimal field elements). */
+export interface EligibilityCommitments {
+  age18?: string;
+  insurance?: string;
 }
 
-export interface BiometricImportFilter {
-  categories?: BiometricMetricCategory[] | undefined;
-  startDate?: string | undefined;
-  endDate?: string | undefined;
+/** Normalised pinning state reported by the backend for a record ciphertext. */
+export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
+
+export interface RecordIpfsStorage {
+  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
+  cid: string;
+  pinStatus: IpfsPinStatus;
+  pinnedAt?: string;
 }
 
-export interface BiometricImportSummary {
-  totalRecordsProcessed: number;
-  totalDailyObservations: number;
-  byCategory: Record<BiometricMetricCategory, number>;
-  dateRange: {
-    start: string | null;
-    end: string | null;
-  };
+/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
+export interface RecordKeyMaterial {
+  key: string;
+  iv: string;
+  fileName: string;
+  fileType: string;
 }
 
 export interface EncounterNote {
@@ -471,189 +464,3 @@ export interface StepAwayContact {
   target: string;
 }
 
-/* ── Video Call Transcription & Clinical Notes (#64) ───────────────── */
-
-export interface TranscriptionConsentState {
-  doctorConsented: boolean;
-  patientConsented: boolean;
-  isMutualConsent: boolean;
-  timestamp?: number | undefined;
-}
-
-export interface TranscriptSegment {
-  id: string;
-  speaker: 'doctor' | 'patient';
-  text: string;
-  isFinal: boolean;
-  timestamp: number;
-}
-
-export interface ClinicalDraftNote {
-  appointmentId: string;
-  patientAddress: string;
-  generatedAt: string;
-  diagnosis: string;
-  notes: string;
-  prescription: string;
-  rawTranscripts: TranscriptSegment[];
-}
-
-/* ── WebRTC Automated Reconnection & State Recovery (#66) ─────────── */
-
-export type ReconnectionState = 'connected' | 'reconnecting' | 'failed';
-
-export interface ReconnectionStatus {
-  state: ReconnectionState;
-  remainingSeconds: number;
-  attemptCount: number;
-  message?: string | undefined;
-}
-export interface EligibilityCommitments {
-  age18?: string;
-  insurance?: string;
-}
-
-/** Normalised pinning state reported by the backend for a record ciphertext. */
-export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
-
-export interface RecordIpfsStorage {
-  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
-  cid: string;
-  pinStatus: IpfsPinStatus;
-  pinnedAt?: string;
-}
-
-/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
-export interface RecordKeyMaterial {
-  key: string;
-  iv: string;
-  fileName: string;
-  fileType: string;
-}
-
-/* ── Anti-phishing security shield (#119) ─────────────────────────── */
-
-export type ShieldIcon =
-  | 'anchor'
-  | 'compass'
-  | 'feather'
-  | 'flame'
-  | 'gem'
-  | 'heart'
-  | 'key'
-  | 'leaf'
-  | 'moon'
-  | 'mountain'
-  | 'star'
-  | 'sun';
-
-/** Server statement that `publicKey` registered the shield `fingerprint`, issued for `origin`. */
-export interface ShieldAttestation {
-  publicKey: string;
-  /** Hex SHA-256 fingerprint of the shield (see `computeShieldFingerprint`). */
-  fingerprint: string;
-  /** Origin the attestation was requested for, e.g. `https://app.heliora.io`. */
-  origin: string;
-  issuedAt: string;
-  /** Base64 SEP-53 signature by the Heliora auth signing key. */
-  signature: string;
-}
-
-/** Body of `POST /auth/anti-phishing`; `signature` is the wallet's SEP-53 signature. */
-export interface ShieldEnrollment {
-  publicKey: string;
-  fingerprint: string;
-  origin: string;
-  issuedAt: string;
-  signature: string;
-}
-
-export type ShieldVerificationStatus =
-  | 'verified'
-  | 'mismatch'
-  | 'invalid-signature'
-  | 'wrong-origin'
-  | 'stale'
-  | 'not-enrolled'
-  | 'unavailable'
-  | 'not-configured';
-
-/* ── Clinical supervisor delegated proxy access (#118) ─────────────── */
-
-export type DelegatedProxyScope = 'encounter:read' | 'encounter:cosign';
-
-/** Short-lived token letting an attending physician act on a resident's drafts. */
-export interface DelegatedProxyToken {
-  tokenId: string;
-  supervisorAddress: string;
-  supervisorName: string;
-  residentAddress: string;
-  residentName: string;
-  scopes: DelegatedProxyScope[];
-  issuedAt: string;
-  expiresAt: string;
-}
-
-export type EncounterDraftStatus = 'pending_cosign' | 'cosigned' | 'returned';
-
-/** Consultation note drafted by a resident, awaiting supervisor approval. */
-export interface EncounterDraft {
-  id: string;
-  appointmentId: string;
-  patientAddress: string;
-  patientName?: string;
-  residentAddress: string;
-  residentName: string;
-  content: string;
-  status: EncounterDraftStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** Supervisor co-signature over an approved draft, logged by the backend. */
-export interface SupervisorCosignature {
-  draftId: string;
-  proxyTokenId: string;
-  supervisorAddress: string;
-  residentAddress: string;
-  /** Hex SHA-256 of the exact draft content that was approved. */
-  contentHash: string;
-  signedAt: string;
-  /** Base64 SEP-53 signature by the supervisor's wallet. */
-  signature: string;
-}
-
-/* ── Trusted clinician address book (#116) ─────────────────────────── */
-
-export interface TrustedContact {
-  id: string;
-  /** Stellar account (G…) of the provider. */
-  publicKey: string;
-  /** Friendly name chosen by the patient. */
-  alias: string;
-  notes?: string;
-  specialty?: string;
-  /** Set when the address was confirmed against the Heliora provider registry. */
-  verified: boolean;
-  /** Name the registry lists for this address, when verified. */
-  verifiedName?: string;
-  verifiedAt?: string;
-  createdAt: string;
-  updatedAt: string;
-  /** Tombstone, so a deletion wins over an older copy when backups are merged. */
-  deletedAt?: string;
-}
-
-export interface AddressBook {
-  version: 1;
-  updatedAt: string;
-  contacts: TrustedContact[];
-}
-
-/** Address book sealed with the wallet-derived backup key, as stored by the backend. */
-export interface EncryptedAddressBookBackup {
-  version: 1;
-  iv: string;
-  ciphertext: string;
-  updatedAt: string;
-}

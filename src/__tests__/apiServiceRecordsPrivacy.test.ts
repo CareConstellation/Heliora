@@ -6,7 +6,10 @@ import {
   uploadCiphertextToIpfs,
 } from '@/services/api.service';
 
+// `var` keeps these hoisted above the jest.mock factory, which runs before imports.
+// eslint-disable-next-line no-var
 var mockApi: Record<'get' | 'post', jest.Mock>;
+// eslint-disable-next-line no-var
 var mockAxiosPost: jest.Mock;
 
 jest.mock('axios', () => {

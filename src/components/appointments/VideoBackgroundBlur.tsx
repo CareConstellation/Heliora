@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Eye, EyeOff, Sliders } from 'lucide-react';
-import { createVideoBlurProcessor, type BackgroundBlurOptions } from '@/lib/videoBackgroundBlur';
+import { createVideoBlurProcessor } from '@/lib/videoBackgroundBlur';
 
 interface VideoBackgroundBlurProps {
   localVideoStream: MediaStream | null;
@@ -54,10 +54,12 @@ export function VideoBackgroundBlur({ localVideoStream, onProcessedStreamReady }
     };
 
     videoRef.current.srcObject = localVideoStream;
-    videoRef.current.play();
+    void videoRef.current.play().catch(() => {
+      // Autoplay can be blocked until the user interacts with the page.
+    });
 
     const timer = setTimeout(() => {
-      initializeProcessor();
+      void initializeProcessor();
     }, 500);
 
     return () => {

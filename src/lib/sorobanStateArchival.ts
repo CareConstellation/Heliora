@@ -1,4 +1,4 @@
-import { Transaction, Keypair, StrKey } from 'stellar-sdk';
+import type { Keypair } from '@stellar/stellar-sdk';
 
 interface ArchivedState {
   id: string;
@@ -59,7 +59,7 @@ class SorobanStateArchival {
       dataValue,
       archiveTimestamp: now,
       archivedBy: archiver.publicKey(),
-      metadata,
+      ...(metadata ? { metadata } : {}),
     };
   }
 
@@ -320,9 +320,5 @@ class SorobanStateArchival {
   }
 }
 
-export {
-  SorobanStateArchival,
-  ArchivedState,
-  ArchiveManifest,
-  RestorationRequest,
-};
+export { SorobanStateArchival };
+export type { ArchivedState, ArchiveManifest, RestorationRequest };

@@ -44,9 +44,9 @@ export function MedicalPDFExporter({
         {
           patientName,
           patientAddress,
-          qrCodeDataUrl,
-          stellarTransactionHash,
-          recordDigest,
+          ...(qrCodeDataUrl ? { qrCodeDataUrl } : {}),
+          ...(stellarTransactionHash ? { stellarTransactionHash } : {}),
+          ...(recordDigest ? { recordDigest } : {}),
         },
         `medical_summary_${new Date().getTime()}.pdf`,
       );

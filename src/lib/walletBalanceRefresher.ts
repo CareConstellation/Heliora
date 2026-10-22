@@ -1,4 +1,4 @@
-import { rpc } from '@stellar/stellar-sdk';
+import { Horizon } from '@stellar/stellar-sdk';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 
 export interface AccountBalance {
@@ -17,16 +17,18 @@ export interface AccountDetails {
 const POLL_INTERVAL_MS = 30 * 1000; // 30 seconds
 const MINIMUM_RESERVE_XLM = 1.5; // 1 XLM base + 0.5 XLM for subentry reserves
 
-let pollIntervals: Map<string, NodeJS.Timeout> = new Map();
+const pollIntervals: Map<string, NodeJS.Timeout> = new Map();
 
 export const walletBalanceRefresher = {
   async fetchAccountDetails(publicKey: string): Promise<AccountDetails | null> {
     try {
-      const server = new rpc.Server(STELLAR_CONFIG.horizonUrl);
-      const account = await server.getAccount(publicKey);
+      const server = new Horizon.Server(STELLAR_CONFIG.horizonUrl);
+      const account = await server.loadAccount(publicKey);
 
       const nativeBalance = parseFloat(
-        account.balances.find((b) => b.asset_type === 'native')?.balance || '0',
+        account.balances.find(
+          (b: { asset_type: string; balance: string }) => b.asset_type === 'native',
+        )?.balance || '0',
       );
 
       return {
@@ -56,14 +58,15 @@ export const walletBalanceRefresher = {
     }
 
     // Initial fetch
-    this.fetchAccountDetails(publicKey).then((details) => {
+    void this.fetchAccountDetails(publicKey).then((details) => {
       if (details) onUpdate(details);
     });
 
     // Set up polling
-    const interval = setInterval(async () => {
-      const details = await this.fetchAccountDetails(publicKey);
-      if (details) onUpdate(details);
+    const interval = setInterval(() => {
+      void this.fetchAccountDetails(publicKey).then((details) => {
+        if (details) onUpdate(details);
+      });
     }, POLL_INTERVAL_MS);
 
     pollIntervals.set(publicKey, interval);

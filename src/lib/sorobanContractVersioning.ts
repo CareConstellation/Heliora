@@ -33,7 +33,7 @@ export async function checkContractVersion(): Promise<ContractVersionInfo | null
     const response = await server.getLedgerEntries(instanceKey);
     if (!response.entries || response.entries.length === 0) return null;
 
-    const entry = response.entries[0];
+    const entry = response.entries[0]!;
     const contractData = entry.val.contractData();
     const instance = contractData.val().instance();
     const executable = instance.executable();
