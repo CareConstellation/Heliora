@@ -19,7 +19,14 @@ if (typeof Blob !== 'undefined' && !Blob.prototype.arrayBuffer) {
   Blob.prototype.arrayBuffer = async function () {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onload = () => {
+        const res = reader.result;
+        if (!res) return resolve(new ArrayBuffer(0));
+        const buf = Buffer.isBuffer(res) ? res : Buffer.from(res as any);
+        const ab = new ArrayBuffer(buf.byteLength);
+        new Uint8Array(ab).set(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+        resolve(ab);
+      };
       reader.onerror = () => reject(reader.error);
       reader.readAsArrayBuffer(this);
     });

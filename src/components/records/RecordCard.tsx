@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import type { MedicalRecord } from '@/types';
 import { shareRecord } from '@/services/api.service';
 import RecordDetailDrawer from './RecordDetailDrawer';

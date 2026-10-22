@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
@@ -505,3 +505,61 @@ export const cancelAppointmentWithPenalty = (appointmentId: string, confirm: boo
   api
     .post<Appointment>(`/appointments/${appointmentId}/cancel-with-penalty`, { confirm })
     .then((r) => r.data);
+
+/**
+ * Fetch the hash-based eligibility commitments published for a patient address.
+ * Used client-side to verify zk-proof inputs against the patient's registered commitments.
+ * @param address - Patient Stellar public key.
+ * @returns {@link EligibilityCommitments}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchEligibilityCommitments = (address: string) =>
+  api
+    .get<EligibilityCommitments>(`/users/${address}/eligibility-commitments`)
+    .then((r) => r.data);
+
+// IPFS ciphertext storage
+
+/**
+ * Ask the backend for a short-lived Pinata presigned upload URL, so the Pinata JWT never reaches the browser.
+ * The backend signs it (`POST https://uploads.pinata.cloud/v3/files/sign`) with
+ * `cid_version: "unixfs-v1-2025"`; Pinata only honours upload options set when the URL is signed.
+ * @returns The signed upload URL.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const createIpfsUploadUrl = () =>
+  api.post<{ url: string }>('/records/ipfs/upload-url').then((r) => r.data.url);
+
+/**
+ * Upload a ciphertext to Pinata's public IPFS network through a presigned URL. The URL's
+ * `unixfs-v1-2025` CID profile makes the returned CID reproducible client-side.
+ * @param signedUrl - URL from {@link createIpfsUploadUrl}.
+ * @param ciphertext - Encrypted record bytes.
+ * @returns The CID Pinata assigned (`data.cid`).
+ * @throws On network failure or non-2xx response.
+ */
+export const uploadCiphertextToIpfs = (signedUrl: string, ciphertext: Blob) => {
+  const form = new FormData();
+  form.append('file', ciphertext, 'record.enc');
+  form.append('network', 'public');
+  return axios.post<{ data: { cid: string } }>(signedUrl, form).then((r) => r.data.data.cid);
+};
+
+/**
+ * Fetch the IPFS pinning status of a record's ciphertext.
+ * @param recordId - Record ID.
+ * @returns {@link RecordIpfsStorage}.
+ * @throws {ApiError} On network failure or non-2xx response (404 if the record is not stored on IPFS).
+ */
+export const fetchRecordIpfsStorage = (recordId: string) =>
+  api.get<RecordIpfsStorage>(`/records/${recordId}/ipfs`).then((r) => r.data);
+
+/**
+ * Fetch the AES-256-GCM key and IV stored for a record at upload.
+ * @param recordId - Record ID.
+ * @returns {@link RecordKeyMaterial}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchRecordKeyMaterial = (recordId: string) =>
+  api.get<RecordKeyMaterial>(`/records/${recordId}/key`).then((r) => r.data);
+
