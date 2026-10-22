@@ -14,7 +14,7 @@
     "prepare": "husky || true"
   },
   "dependencies": {
-    "@ledgerhq/hw-app-str": "^6.27.1",
+    "@ledgerhq/hw-app-str": "^6.27.0",
     "@ledgerhq/hw-transport-webhid": "^6.27.0",
     "@ledgerhq/hw-transport-webusb": "^6.27.0",
     "@scure/bip39": "^2.4.0",
@@ -54,6 +54,7 @@
     "circomlib": "^2.0.5",
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.5.22",
+    "fdir": "^6.5.0",
     "husky": "^9.1.7",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",

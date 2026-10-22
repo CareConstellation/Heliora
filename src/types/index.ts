@@ -471,3 +471,62 @@ export interface StepAwayContact {
   target: string;
 }
 
+/* ── Video Call Transcription & Clinical Notes (#64) ───────────────── */
+
+export interface TranscriptionConsentState {
+  doctorConsented: boolean;
+  patientConsented: boolean;
+  isMutualConsent: boolean;
+  timestamp?: number | undefined;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  speaker: 'doctor' | 'patient';
+  text: string;
+  isFinal: boolean;
+  timestamp: number;
+}
+
+export interface ClinicalDraftNote {
+  appointmentId: string;
+  patientAddress: string;
+  generatedAt: string;
+  diagnosis: string;
+  notes: string;
+  prescription: string;
+  rawTranscripts: TranscriptSegment[];
+}
+
+/* ── WebRTC Automated Reconnection & State Recovery (#66) ─────────── */
+
+export type ReconnectionState = 'connected' | 'reconnecting' | 'failed';
+
+export interface ReconnectionStatus {
+  state: ReconnectionState;
+  remainingSeconds: number;
+  attemptCount: number;
+  message?: string | undefined;
+}
+export interface EligibilityCommitments {
+  age18?: string;
+  insurance?: string;
+}
+
+/** Normalised pinning state reported by the backend for a record ciphertext. */
+export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
+
+export interface RecordIpfsStorage {
+  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
+  cid: string;
+  pinStatus: IpfsPinStatus;
+  pinnedAt?: string;
+}
+
+/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
+export interface RecordKeyMaterial {
+  key: string;
+  iv: string;
+  fileName: string;
+  fileType: string;
+}
