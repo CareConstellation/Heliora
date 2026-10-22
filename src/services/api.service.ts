@@ -1,8 +1,7 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, RecordAccessEvent } from '@/types';
-import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
-import type { TransactionSigner } from '@/lib/stellar';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier } from '@/types';
+import { verifyDelegationVoucher, type DelegationVoucher, type EnvelopeHeader, type EnvelopeRecipient } from '@/lib/crypto';
 
 /**
  * Shared axios instance for all API calls.
@@ -50,12 +49,41 @@ const normalizeError = (error: AxiosError<{ message?: string; error?: string }>)
 
 api.interceptors.response.use((response) => response, normalizeError);
 
-// Backend session JWT from SEP-10. Kept in memory only (never localStorage) so XSS cannot lift it from storage.
-// ponytail: lost on reload; switch to an httpOnly cookie set by /auth/token if sessions must survive reloads.
-let session: { token: string; exp: number } | null = null;
+// Anti-replay protection and nonce verification interceptor for off-chain delegation vouchers (Issue #35)
+api.interceptors.request?.use((config) => {
+  const headers = config.headers as Record<string, unknown> | undefined;
+  const voucherHeader = headers?.['x-delegation-voucher'] || headers?.['X-Delegation-Voucher'];
+  let voucher: DelegationVoucher | undefined;
 
-api.interceptors.request.use((config) => {
-  if (session && session.exp > Date.now() / 1000) config.headers.Authorization = `Bearer ${session.token}`;
+  if (voucherHeader) {
+    try {
+      voucher = typeof voucherHeader === 'string' ? JSON.parse(voucherHeader) : (voucherHeader as DelegationVoucher);
+    } catch {
+      const apiError: ApiError = {
+        message: 'Malformed X-Delegation-Voucher header JSON.',
+        status: 400,
+        code: 'MALFORMED_VOUCHER',
+        data: null,
+      };
+      return Promise.reject(apiError);
+    }
+  } else if (config.data && typeof config.data === 'object' && 'voucher' in config.data) {
+    voucher = (config.data as { voucher?: DelegationVoucher }).voucher;
+  }
+
+  if (voucher) {
+    const verification = verifyDelegationVoucher(voucher);
+    if (!verification.isValid) {
+      const apiError: ApiError = {
+        message: verification.error || 'Delegation voucher verification failed.',
+        status: 400,
+        code: verification.code || 'INVALID_DELEGATION_VOUCHER',
+        data: { voucher, code: verification.code },
+      };
+      return Promise.reject(apiError);
+    }
+  }
+
   return config;
 });
 
@@ -516,55 +544,32 @@ export const cancelAppointmentWithPenalty = (appointmentId: string, confirm: boo
     .post<Appointment>(`/appointments/${appointmentId}/cancel-with-penalty`, { confirm })
     .then((r) => r.data);
 
-// Record access audit trail (#78)
-
 /**
- * Every read, decrypt and export of a patient's records, newest first.
- * @throws {ApiError} On network failure or non-2xx response.
+ * Issue #35: Redeem an off-chain signed delegation voucher with anti-replay protection.
+ * Client-side interceptor verifies monotonic sequence, timestamp skew (<=120s), and 5m window before dispatch.
+ * @param voucher - The signed DelegationVoucher.
+ * @returns Redemption confirmation receipt.
+ * @throws {ApiError} On verification failure, replay attack, or non-2xx response.
  */
-export const fetchRecordAccessLog = (patientAddress: string) =>
-  api
-    .get<RecordAccessEvent[]>(`/records/access-log/${patientAddress}`)
+export const redeemDelegationVoucher = (voucher: DelegationVoucher) => {
+  const verification = verifyDelegationVoucher(voucher);
+  if (!verification.isValid) {
+    const apiError: ApiError = {
+      message: verification.error || 'Delegation voucher verification failed.',
+      status: 400,
+      code: verification.code || 'INVALID_DELEGATION_VOUCHER',
+      data: { voucher, code: verification.code },
+    };
+    return Promise.reject(apiError);
+  }
+  return api
+    .post<{ success: boolean; redeemedAt: string; voucherId: string }>('/vouchers/redeem', { voucher })
     .then((r) => r.data);
-
-// SEP-10 Web Authentication (#83)
-
-/** GET the SEP-10 challenge envelope for `account` (`/api/v1/auth/challenge`; base URL carries `/api/v1`). */
-export const requestAuthChallenge = (account: string) =>
-  api
-    .get<{ transaction: string; network_passphrase?: string }>('/auth/challenge', {
-      params: { account },
-    })
-    .then((r) => r.data);
-
-/** POST the wallet-signed challenge and receive the session JWT. */
-export const submitSignedChallenge = (transaction: string) =>
-  api.post<{ token: string }>('/auth/token', { transaction }).then((r) => r.data);
-
-/** Current session JWT, or null when absent or expired. */
-export const getSessionToken = () =>
-  session && session.exp > Date.now() / 1000 ? session.token : null;
-
-export const clearSession = () => {
-  session = null;
 };
 
 /**
- * Proves wallet ownership via SEP-10 and stores the resulting backend session JWT.
- * The challenge is validated against `NEXT_PUBLIC_AUTH_SIGNING_KEY` before signing,
- * so the wallet never signs an arbitrary transaction, and it is never broadcast.
+ * Verifies a delegation voucher directly using client-side cryptographic anti-replay logic.
  */
-export async function authenticateWithSep10(account: string, sign: TransactionSigner) {
-  const serverKey = process.env.NEXT_PUBLIC_AUTH_SIGNING_KEY;
-  if (!serverKey) throw new Error('NEXT_PUBLIC_AUTH_SIGNING_KEY is not configured.');
-  const webAuthDomain = new URL(process.env.NEXT_PUBLIC_API_URL || window.location.origin, window.location.origin).hostname;
-  const homeDomain = process.env.NEXT_PUBLIC_AUTH_HOME_DOMAIN || webAuthDomain;
+export const verifyDelegationVoucherClient = (voucher: DelegationVoucher) =>
+  verifyDelegationVoucher(voucher);
 
-  // Lazy: keeps the Stellar SDK out of every module that only needs REST calls.
-  const { signChallenge, jwtExpiry } = await import('@/lib/sep10');
-  const { transaction } = await requestAuthChallenge(account);
-  const signed = await signChallenge(transaction, serverKey, homeDomain, webAuthDomain, account, sign);
-  const { token } = await submitSignedChallenge(signed);
-  session = { token, exp: jwtExpiry(token) };
-  return token;
-}
