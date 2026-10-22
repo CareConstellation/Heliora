@@ -188,7 +188,7 @@ export async function encryptFile(file: File): Promise<{
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const fileBuffer = await file.arrayBuffer();
 
-  const encryptedBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, fileBuffer);
+  const encryptedBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new Uint8Array(fileBuffer));
 
   return { encryptedBuffer, iv, key };
 }
