@@ -14,6 +14,9 @@
 4. [Appointments](#appointments)
 5. [Hospital](#hospital)
 6. [Users](#users)
+7. [Anti-Phishing Shield](#anti-phishing-shield)
+8. [Delegated Proxy Access](#delegated-proxy-access)
+9. [Trusted Contacts](#trusted-contacts)
 
 ---
 
@@ -379,6 +382,156 @@ This frontend uses **Stellar wallet-based authentication** (not traditional JWT)
 3. The backend returns the user's assigned **role** (`PATIENT`, `DOCTOR`, `HOSPITAL`, or `ADMIN`).
 4. All subsequent requests include the public key as a query parameter or in the request body.
 5. No API key or bearer token is required — access control is handled server-side based on the public key and role.
+
+---
+
+## Anti-Phishing Shield
+
+The phrase never leaves the browser. The server only stores a salted SHA-256 fingerprint (`computeShieldFingerprint` in `src/lib/antiPhishing.ts`).
+
+### Register Shield Fingerprint
+
+```
+POST /auth/anti-phishing
+```
+
+**Request Body:**
+
+```json
+{
+  "publicKey": "GAKP...X7QM",
+  "fingerprint": "9f2c…(64 hex chars)",
+  "origin": "https://app.heliora.io",
+  "issuedAt": "2026-10-22T12:00:00.000Z",
+  "signature": "base64 SEP-53 signature by publicKey"
+}
+```
+
+The server must verify `signature` as a [SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md) signature by `publicKey` over the message `shieldEnrollmentMessage(publicKey, fingerprint, origin, issuedAt)`: the lines `heliora-anti-phishing-enrollment:v1`, `publicKey`, `fingerprint`, `origin`, `issuedAt`, joined with `\n`. It must reject an `origin` that is not an official frontend origin and a stale `issuedAt`.
+
+**Response:** `{ "registered": true }`
+
+### Get Shield Attestation
+
+```
+GET /auth/anti-phishing/:publicKey/attestation?origin=https://app.heliora.io
+```
+
+**Response** (`404` when the account has no shield):
+
+```json
+{
+  "publicKey": "GAKP...X7QM",
+  "fingerprint": "9f2c…",
+  "origin": "https://app.heliora.io",
+  "issuedAt": "2026-10-22T12:00:05.000Z",
+  "signature": "base64 SEP-53 signature by NEXT_PUBLIC_AUTH_SIGNING_KEY"
+}
+```
+
+The server signs the message `heliora-anti-phishing-attestation:v1`, `publicKey`, `fingerprint`, `origin`, `issuedAt` (joined with `\n`) with the auth signing key, and only for official origins. The client rejects attestations older than 5 minutes, issued for another origin or account, or not signed by `NEXT_PUBLIC_AUTH_SIGNING_KEY`.
+
+---
+
+## Delegated Proxy Access
+
+Proxy-scoped requests send the token ID in the `X-Proxy-Token` header. The backend must check the token on every request: not expired, not revoked, and bound to the resident whose drafts are requested.
+
+### Request Proxy Token
+
+```
+POST /auth/proxy-tokens
+```
+
+**Request Body:** `{ "supervisorAddress": "GDOC...9KRT", "residentAddress": "GRES...4MQT" }`
+
+The backend issues a token only when the supervisor is a registered attending of the resident.
+
+**Response:**
+
+```json
+{
+  "tokenId": "proxy-7f3a",
+  "supervisorAddress": "GDOC...9KRT",
+  "supervisorName": "Dr. Sarah Smith",
+  "residentAddress": "GRES...4MQT",
+  "residentName": "Jane Doe",
+  "scopes": ["encounter:read", "encounter:cosign"],
+  "issuedAt": "2026-10-22T12:00:00.000Z",
+  "expiresAt": "2026-10-22T12:30:00.000Z"
+}
+```
+
+### Revoke Proxy Token
+
+```
+DELETE /auth/proxy-tokens/:tokenId
+```
+
+### List Resident Drafts
+
+```
+GET /encounters/drafts          (X-Proxy-Token required)
+```
+
+**Response:** `EncounterDraft[]` (`id`, `appointmentId`, `patientAddress`, `patientName?`, `residentAddress`, `residentName`, `content`, `status: pending_cosign | cosigned | returned`, `createdAt`, `updatedAt`).
+
+### Co-sign Draft
+
+```
+POST /encounters/drafts/:id/cosign   (X-Proxy-Token required)
+```
+
+**Request Body:**
+
+```json
+{
+  "draftId": "draft-1",
+  "proxyTokenId": "proxy-7f3a",
+  "supervisorAddress": "GDOC...9KRT",
+  "residentAddress": "GRES...4MQT",
+  "contentHash": "sha-256 hex of the draft content",
+  "signedAt": "2026-10-22T12:05:00.000Z",
+  "signature": "base64 SEP-53 signature by supervisorAddress"
+}
+```
+
+The signed message is `heliora-supervisor-cosignature:v1`, `draftId`, `proxyTokenId`, `supervisorAddress`, `residentAddress`, `contentHash`, `signedAt`, joined with `\n` (`cosignatureMessage` in `src/lib/delegatedProxy.ts`). The backend must verify the signature, check that `contentHash` matches the stored draft, append the co-signature to the draft's audit log and return the updated `EncounterDraft`.
+
+### Get Co-signature Log
+
+```
+GET /encounters/drafts/:id/cosignatures   (X-Proxy-Token required)
+```
+
+**Response:** `SupervisorCosignature[]`, oldest first.
+
+---
+
+## Trusted Contacts
+
+### Look Up Provider by Address
+
+```
+GET /doctors/by-address/:address
+```
+
+**Response:** a `Doctor` (`id`, `name`, `specialty`, `address`), or `404` when the address is not a registered provider. Used to grant the "verified" badge in the address book.
+
+### Upload / Download Encrypted Address Book Backup
+
+```
+PUT /backups/address-book/:owner
+GET /backups/address-book/:owner      (404 when there is no backup)
+```
+
+**Body / Response:**
+
+```json
+{ "version": 1, "iv": "base64", "ciphertext": "base64", "updatedAt": "2026-10-22T12:00:00.000Z" }
+```
+
+The backup is AES-256-GCM ciphertext. The key is derived on the client from the owner's wallet signature and never sent, so the server cannot read the contacts. The endpoints must be restricted to the authenticated owner.
 
 ---
 
