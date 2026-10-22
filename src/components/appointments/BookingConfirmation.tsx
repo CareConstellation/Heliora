@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Appointment } from '@/types';
 import { CancellationPolicyMatrix } from './CancellationPolicy';
+import { buildICS } from '@/lib/calendarLinks';
 
 interface Props {
   appointment: Appointment;

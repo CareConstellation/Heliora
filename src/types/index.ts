@@ -243,35 +243,28 @@ export interface BulkImportResponse {
   records: MedicalRecord[];
 }
 
-export type BiometricMetricCategory = 'resting_heart_rate' | 'step_count' | 'sleep';
-
-export interface HelioraObservation {
-  id: string;
-  category: BiometricMetricCategory;
-  code: string;
-  display: string;
-  date: string;
-  value: number;
-  unit: string;
-  source: 'Apple Health' | 'Google Fit';
-  rawRecordCount?: number | undefined;
-  metadata?: Record<string, unknown> | undefined;
+/** Poseidon commitments an identity issuer or insurer registered for a patient (decimal field elements). */
+export interface EligibilityCommitments {
+  age18?: string;
+  insurance?: string;
 }
 
-export interface BiometricImportFilter {
-  categories?: BiometricMetricCategory[] | undefined;
-  startDate?: string | undefined;
-  endDate?: string | undefined;
+/** Normalised pinning state reported by the backend for a record ciphertext. */
+export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
+
+export interface RecordIpfsStorage {
+  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
+  cid: string;
+  pinStatus: IpfsPinStatus;
+  pinnedAt?: string;
 }
 
-export interface BiometricImportSummary {
-  totalRecordsProcessed: number;
-  totalDailyObservations: number;
-  byCategory: Record<BiometricMetricCategory, number>;
-  dateRange: {
-    start: string | null;
-    end: string | null;
-  };
+/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
+export interface RecordKeyMaterial {
+  key: string;
+  iv: string;
+  fileName: string;
+  fileType: string;
 }
 
 export interface EncounterNote {
@@ -471,62 +464,3 @@ export interface StepAwayContact {
   target: string;
 }
 
-/* ── Video Call Transcription & Clinical Notes (#64) ───────────────── */
-
-export interface TranscriptionConsentState {
-  doctorConsented: boolean;
-  patientConsented: boolean;
-  isMutualConsent: boolean;
-  timestamp?: number | undefined;
-}
-
-export interface TranscriptSegment {
-  id: string;
-  speaker: 'doctor' | 'patient';
-  text: string;
-  isFinal: boolean;
-  timestamp: number;
-}
-
-export interface ClinicalDraftNote {
-  appointmentId: string;
-  patientAddress: string;
-  generatedAt: string;
-  diagnosis: string;
-  notes: string;
-  prescription: string;
-  rawTranscripts: TranscriptSegment[];
-}
-
-/* ── WebRTC Automated Reconnection & State Recovery (#66) ─────────── */
-
-export type ReconnectionState = 'connected' | 'reconnecting' | 'failed';
-
-export interface ReconnectionStatus {
-  state: ReconnectionState;
-  remainingSeconds: number;
-  attemptCount: number;
-  message?: string | undefined;
-}
-export interface EligibilityCommitments {
-  age18?: string;
-  insurance?: string;
-}
-
-/** Normalised pinning state reported by the backend for a record ciphertext. */
-export type IpfsPinStatus = 'pinned' | 'queued' | 'failed';
-
-export interface RecordIpfsStorage {
-  /** CIDv1 (unixfs-v1-2025 profile) of the record ciphertext. */
-  cid: string;
-  pinStatus: IpfsPinStatus;
-  pinnedAt?: string;
-}
-
-/** Base64 AES-256-GCM key material and original file details for a record ciphertext. */
-export interface RecordKeyMaterial {
-  key: string;
-  iv: string;
-  fileName: string;
-  fileType: string;
-}

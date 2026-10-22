@@ -3,7 +3,6 @@
 import { useState, useCallback } from 'react';
 import {
   calculateResourceSavings,
-  estimateBatchRevocationFee,
   formatBatchRevocationSummary,
   type CollaboratorRevocation,
 } from '@/lib/sorobanAuth';
@@ -24,8 +23,8 @@ interface BatchRevokePermissionsProps {
 
 export default function BatchRevokePermissions({
   clinicians,
-  contractId,
-  ownerAddress,
+  contractId: _contractId,
+  ownerAddress: _ownerAddress,
   onRevoke,
 }: BatchRevokePermissionsProps) {
   const [selectedClinicians, setSelectedClinicians] = useState<Set<string>>(new Set());
@@ -44,7 +43,6 @@ export default function BatchRevokePermissions({
     };
   });
 
-  const totalRecordCount = revocations.reduce((sum, r) => sum + r.recordIds.length, 0);
   const resourceSavings = calculateResourceSavings(revocations.length);
 
   const handleToggleClinician = useCallback((clinicianId: string) => {

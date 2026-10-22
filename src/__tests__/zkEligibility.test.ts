@@ -106,7 +106,7 @@ describe('verifyEligibilityProof (#27)', () => {
 
   it('rejects a proof whose curve points were altered', async () => {
     const tampered = clone(age.token);
-    tampered.proof.pi_a[0] = ins.token.proof.pi_a[0]!;
+    (tampered.proof as { pi_a: string[] }).pi_a[0] = (ins.token.proof as { pi_a: string[] }).pi_a[0]!;
     await expect(verifyEligibilityProof(tampered, age.commitment, age.now, ageVkey)).resolves.toBe(
       false,
     );

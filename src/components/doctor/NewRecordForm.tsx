@@ -8,27 +8,16 @@ import { checkMedicationInteractions } from '@/services/drugInteractionService';
 import { useWalletStore } from '@/store/useWalletStore';
 import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
-import type { DiagnosisCode, MedicationCheckResult, ClinicalDraftNote } from '@/types';
-import { AlertTriangle, AlertOctagon, ShieldAlert, CheckCircle2, Info, Sparkles } from 'lucide-react';
-import { getStoredDraftNote, clearStoredDraftNote, getDraftStorageKey } from '@/lib/transcription';
+import type { DiagnosisCode, MedicationCheckResult } from '@/types';
+import { AlertTriangle, AlertOctagon, ShieldAlert, Info } from 'lucide-react';
 
 interface Props {
   patientAddress: string;
   onSuccess: () => void;
   patientAllergies?: string[];
-  initialNotes?: string | undefined;
-  initialDiagnosis?: string | undefined;
-  initialPrescription?: string | undefined;
 }
 
-export default function NewRecordForm({
-  patientAddress,
-  onSuccess,
-  patientAllergies = [],
-  initialNotes,
-  initialDiagnosis,
-  initialPrescription,
-}: Props) {
+export default function NewRecordForm({ patientAddress, onSuccess, patientAllergies = [] }: Props) {
   const { publicKey } = useWalletStore();
   const queryClient = useQueryClient();
   const [form, setForm] = useState({
@@ -39,65 +28,6 @@ export default function NewRecordForm({
     acknowledgeRisk: false,
   });
   const [dx, setDx] = useState<DiagnosisCode | null>(null);
-  const [draftApplied, setDraftApplied] = useState(false);
-
-  // Auto-populate draft note text fields at the end of the call (#64)
-  useEffect(() => {
-    const applyDraft = (draft: ClinicalDraftNote) => {
-      setForm((prev) => ({
-        ...prev,
-        notes: prev.notes || draft.notes || '',
-        diagnosis: prev.diagnosis || draft.diagnosis || '',
-        prescription: prev.prescription || draft.prescription || '',
-      }));
-      setDraftApplied(true);
-    };
-
-    if (initialNotes || initialDiagnosis || initialPrescription) {
-      setForm((prev) => ({
-        ...prev,
-        notes: prev.notes || initialNotes || '',
-        diagnosis: prev.diagnosis || initialDiagnosis || '',
-        prescription: prev.prescription || initialPrescription || '',
-      }));
-      setDraftApplied(true);
-      return;
-    }
-
-    const storedDraft = getStoredDraftNote(patientAddress);
-    if (storedDraft) {
-      applyDraft(storedDraft);
-    }
-
-    // Handle end-of-call live draft events
-    const handleDraftReady = (e: Event) => {
-      const custom = e as CustomEvent<ClinicalDraftNote>;
-      if (custom.detail && custom.detail.patientAddress === patientAddress) {
-        applyDraft(custom.detail);
-      }
-    };
-
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === getDraftStorageKey(patientAddress) && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue) as ClinicalDraftNote;
-          applyDraft(parsed);
-        } catch {}
-      }
-    };
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('heliora-draft-note-ready', handleDraftReady);
-      window.addEventListener('storage', handleStorage);
-    }
-
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('heliora-draft-note-ready', handleDraftReady);
-        window.removeEventListener('storage', handleStorage);
-      }
-    };
-  }, [patientAddress, initialNotes, initialDiagnosis, initialPrescription]);
 
   const [checkResult, setCheckResult] = useState<MedicationCheckResult | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -149,18 +79,20 @@ export default function NewRecordForm({
       return;
     }
 
-    const timer = setTimeout(async () => {
-      setIsChecking(true);
-      try {
-        const result = await checkMedicationInteractions({
-          proposedPrescription: form.prescription,
-          activeMedications,
-          allergies: documentedAllergies,
-        });
-        if (active) setCheckResult(result);
-      } finally {
-        if (active) setIsChecking(false);
-      }
+    const timer = setTimeout(() => {
+      void (async () => {
+        setIsChecking(true);
+        try {
+          const result = await checkMedicationInteractions({
+            proposedPrescription: form.prescription,
+            activeMedications,
+            allergies: documentedAllergies,
+          });
+          if (active) setCheckResult(result);
+        } finally {
+          if (active) setIsChecking(false);
+        }
+      })();
     }, 200);
 
     return () => {
@@ -194,7 +126,9 @@ export default function NewRecordForm({
         diagnosis: form.diagnosis,
         prescription: form.prescription,
         notes: notesContent,
-        ...(form.overrideRationale.trim() ? { overrideRationale: form.overrideRationale.trim() } : {}),
+        ...(form.overrideRationale.trim()
+          ? { overrideRationale: form.overrideRationale.trim() }
+          : {}),
         ...(dx ? { diagnosisCode: dx } : {}),
       });
 
@@ -238,10 +172,8 @@ export default function NewRecordForm({
       return record;
     },
     onSuccess: () => {
-      clearStoredDraftNote(patientAddress);
-      setDraftApplied(false);
-      queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
-      queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['doctor-appointments'] });
+      void queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
       setForm({
         diagnosis: '',
         prescription: '',
@@ -251,7 +183,6 @@ export default function NewRecordForm({
       });
       setDx(null);
       setCheckResult(null);
-      dictation.stop();
       onSuccess();
     },
   });
@@ -264,31 +195,6 @@ export default function NewRecordForm({
       }}
       className="space-y-4"
     >
-      {draftApplied && (
-        <div className="flex items-center justify-between rounded-lg bg-green/10 border border-green/20 px-3 py-2 text-xs text-text-1">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-green shrink-0" />
-            <span>Draft clinical notes auto-populated from call transcription</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              clearStoredDraftNote(patientAddress);
-              setDraftApplied(false);
-              setForm((f: { diagnosis: string; prescription: string; notes: string; overrideRationale: string; acknowledgeRisk: boolean }) => ({
-                ...f,
-                notes: '',
-                diagnosis: '',
-                prescription: '',
-              }));
-            }}
-            className="text-2xs text-text-3 hover:text-text-1 underline ml-2"
-          >
-            Clear Draft
-          </button>
-        </div>
-      )}
-
       <div>
         <label className="block text-xs font-medium text-text-2 mb-1">Diagnosis *</label>
         <DiagnosisCodeInput
@@ -429,59 +335,14 @@ export default function NewRecordForm({
       )}
 
       <div>
-        <div className="flex items-center justify-between mb-1">
-          <label htmlFor="record-notes" className="block text-xs font-medium text-text-2">Notes</label>
-          {dictation.supported ? (
-            <div className="flex items-center gap-1.5">
-              {dictation.status === 'listening' && (
-                <span className="inline-flex items-center gap-1 text-2xs text-red-600" aria-live="polite">
-                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                  Listening
-                </span>
-              )}
-              {dictation.status === 'paused' && <span className="text-2xs text-text-3">Paused</span>}
-              {dictation.status === 'idle' && (
-                <button type="button" onClick={dictation.start} className="btn-icon inline-flex items-center gap-1 rounded-md px-2 py-1 text-2xs" aria-label="Start dictation">
-                  <Mic className="w-3.5 h-3.5" /> Dictate
-                </button>
-              )}
-              {dictation.status === 'listening' && (
-                <button type="button" onClick={dictation.pause} className="btn-icon w-7 h-7 rounded-md" aria-label="Pause dictation">
-                  <Pause className="w-3.5 h-3.5" />
-                </button>
-              )}
-              {dictation.status === 'paused' && (
-                <button type="button" onClick={dictation.resume} className="btn-icon w-7 h-7 rounded-md" aria-label="Resume dictation">
-                  <Play className="w-3.5 h-3.5" />
-                </button>
-              )}
-              {dictation.status !== 'idle' && (
-                <button type="button" onClick={dictation.stop} className="btn-icon w-7 h-7 rounded-md" aria-label="Stop dictation">
-                  <Square className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-2xs text-text-3">
-              <MicOff className="w-3 h-3" /> Dictation unsupported in this browser
-            </span>
-          )}
-        </div>
+        <label className="block text-xs font-medium text-text-2 mb-1">Notes</label>
         <textarea
-          id="record-notes"
           rows={3}
           value={form.notes}
           onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
           placeholder="Additional clinical observations, follow-up instructions…"
           className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
         />
-        {dictation.interim && (
-          <p className="mt-1 text-xs italic text-text-3" aria-live="polite">{dictation.interim}…</p>
-        )}
-        {dictation.error && <p className="mt-1 text-xs text-red-600">{dictation.error}</p>}
-        {dictation.status !== 'idle' && (
-          <p className="mt-1 text-2xs text-text-3">Say “period”, “comma”, “next line” or “new paragraph” to format.</p>
-        )}
       </div>
 
       {mutation.isError && (

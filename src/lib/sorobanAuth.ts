@@ -1,4 +1,4 @@
-import { Operation, Contract, Address } from '@stellar/stellar-sdk';
+import { Contract, Address, nativeToScVal } from '@stellar/stellar-sdk';
 
 export interface CollaboratorRevocation {
   collaboratorId: string;
@@ -42,7 +42,9 @@ export function buildBatchRevocationOperation(config: BatchRevocationConfig): an
 
     return contract.call(
       'revoke_record_access',
-      ...[ownerAddress, collaboratorAddress, revocation.recordIds]
+      ownerAddress.toScVal(),
+      collaboratorAddress.toScVal(),
+      nativeToScVal(revocation.recordIds),
     );
   });
 

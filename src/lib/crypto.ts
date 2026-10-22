@@ -172,7 +172,7 @@ export function auditEntropySource(
  */
 export async function encryptFile(file: File): Promise<{
   encryptedBuffer: ArrayBuffer;
-  iv: Uint8Array;
+  iv: Uint8Array<ArrayBuffer>;
   key: CryptoKey;
 }> {
   auditEntropySource();
@@ -188,11 +188,7 @@ export async function encryptFile(file: File): Promise<{
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const fileBuffer = await file.arrayBuffer();
 
-  const encryptedBuffer = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    new Uint8Array(fileBuffer),
-  );
+  const encryptedBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new Uint8Array(fileBuffer));
 
   return { encryptedBuffer, iv, key };
 }
@@ -219,6 +215,166 @@ export async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+/**
+ * Decrypt an {@link encryptFile} ciphertext.
+ * @param ciphertext - AES-256-GCM ciphertext with its authentication tag.
+ * @param rawKey - The file's 32-byte raw key.
+ * @param iv - The 12-byte IV used at encryption.
+ * @returns The plaintext; rejects if the ciphertext or tag was altered.
+ */
+export async function decryptFile(
+  ciphertext: ArrayBuffer,
+  rawKey: Uint8Array<ArrayBuffer>,
+  iv: Uint8Array<ArrayBuffer>,
+): Promise<ArrayBuffer> {
+  const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+}
+
+/* ── Password-derived recovery key backup ───────────────────────────── */
+
+/** OWASP Password Storage Cheat Sheet: PBKDF2-HMAC-SHA256 with 600,000 iterations (FIPS-140 compliant). */
+export const RECOVERY_PBKDF2_ITERATIONS = 600_000;
+/** Upper bound accepted when restoring, so a tampered file cannot stall the browser. */
+const MAX_RECOVERY_PBKDF2_ITERATIONS = 10_000_000;
+const RECOVERY_SALT_BYTES = 32;
+const RECOVERY_KEY_BYTES = 32;
+export const RECOVERY_BACKUP_EXTENSION = '.reliora-backup';
+
+/** Contents of a `.reliora-backup` file. Every field except `ciphertext` is authenticated as AES-GCM additional data. */
+export interface RecoveryBackup {
+  format: 'reliora-backup';
+  version: 1;
+  account: string;
+  createdAt: string;
+  kdf: { name: 'PBKDF2'; hash: 'SHA-256'; iterations: number; salt: string };
+  cipher: { name: 'AES-GCM'; iv: string };
+  /** Base64 AES-256-GCM ciphertext of the recovery key (32 bytes + 16-byte tag). */
+  ciphertext: string;
+}
+
+/** Generates a high-entropy 256-bit recovery key. */
+export function generateRecoveryKey(): Uint8Array<ArrayBuffer> {
+  return crypto.getRandomValues(new Uint8Array(RECOVERY_KEY_BYTES));
+}
+
+/** PBKDF2-HMAC-SHA256 → non-extractable AES-256-GCM key. The passphrase is NFKD-normalised, as BIP-39 requires. */
+async function deriveBackupKey(
+  passphrase: string,
+  salt: Uint8Array<ArrayBuffer>,
+  iterations: number,
+): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase.normalize('NFKD')),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/** Canonical encoding of the backup header, bound to the ciphertext as AES-GCM additional data. */
+function backupAad({
+  format,
+  version,
+  account,
+  createdAt,
+  kdf,
+  cipher,
+}: RecoveryBackup): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      format,
+      version,
+      account,
+      createdAt,
+      kdf.name,
+      kdf.hash,
+      kdf.iterations,
+      kdf.salt,
+      cipher.name,
+      cipher.iv,
+    ]),
+  );
+}
+
+/**
+ * Encrypts `recoveryKey` under a key derived from `passphrase`.
+ * Time is dominated by the 600,000 PBKDF2 iterations (O(iterations)); space O(1).
+ */
+export async function createRecoveryBackup(
+  recoveryKey: Uint8Array<ArrayBuffer>,
+  passphrase: string,
+  account: string,
+): Promise<RecoveryBackup> {
+  const salt = crypto.getRandomValues(new Uint8Array(RECOVERY_SALT_BYTES));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const backup: RecoveryBackup = {
+    format: 'reliora-backup',
+    version: 1,
+    account,
+    createdAt: new Date().toISOString(),
+    kdf: {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      iterations: RECOVERY_PBKDF2_ITERATIONS,
+      salt: toBase64(salt),
+    },
+    cipher: { name: 'AES-GCM', iv: toBase64(iv) },
+    ciphertext: '',
+  };
+  const key = await deriveBackupKey(passphrase, salt, RECOVERY_PBKDF2_ITERATIONS);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: backupAad(backup) },
+    key,
+    recoveryKey,
+  );
+  return { ...backup, ciphertext: toBase64(new Uint8Array(ciphertext)) };
+}
+
+/**
+ * Decrypts a `.reliora-backup` file and returns the recovery key. Rejects files
+ * that are malformed, below the OWASP iteration minimum, or tampered with. A
+ * wrong passphrase fails AES-GCM authentication.
+ */
+export async function restoreRecoveryKey(
+  fileContents: string,
+  passphrase: string,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const backup = JSON.parse(fileContents) as RecoveryBackup;
+  const { kdf, cipher } = backup;
+  if (
+    backup.format !== 'reliora-backup' ||
+    backup.version !== 1 ||
+    kdf?.name !== 'PBKDF2' ||
+    kdf.hash !== 'SHA-256' ||
+    !Number.isSafeInteger(kdf.iterations) ||
+    kdf.iterations < RECOVERY_PBKDF2_ITERATIONS ||
+    kdf.iterations > MAX_RECOVERY_PBKDF2_ITERATIONS ||
+    cipher?.name !== 'AES-GCM'
+  ) {
+    throw new Error('This is not a valid Heliora recovery backup.');
+  }
+  const key = await deriveBackupKey(passphrase, fromBase64(kdf.salt), kdf.iterations);
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(cipher.iv), additionalData: backupAad(backup) },
+      key,
+      fromBase64(backup.ciphertext),
+    );
+    return new Uint8Array(plaintext);
+  } catch {
+    throw new Error('Incorrect recovery passphrase, or the backup file has been modified.');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -976,183 +1132,3 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
-
-/* ═══════════════════════════════════════════════════════════════════
-   Zero-knowledge proof of vaccination (#zk-vax)
-   ═══════════════════════════════════════════════════════════════════ */
-
-/** A single vaccination record as held in the patient's encrypted store. */
-export interface VaccinationRecord {
-  /** Approved vaccine schema / protocol identifier (e.g. "CDC-COVID-2024"). */
-  schemaId: string;
-  /** ISO date of administration (never revealed by the proof). */
-  administeredAt: string;
-  /** Lot number (never revealed by the proof). */
-  lotNumber: string;
-  /** Issuing hospital / clinic identifier (never revealed by the proof). */
-  issuerId: string;
-}
-
-/** Public parameters the verifier trusts: the registry of approved schema IDs. */
-export interface VaccinationRegistry {
-  approvedSchemaIds: string[];
-  /** Minimum number of doses required to satisfy the protocol. */
-  requiredDoses: number;
-}
-
-/**
- * A zero-knowledge proof that the holder has completed an approved vaccination
- * protocol. It reveals only the fact of eligibility — not dates, lot numbers,
- * issuer IDs, or which specific schema was matched.
- */
-export interface VaccinationProof {
-  version: 1;
-  /** Commitment to the patient's record set (hides the underlying records). */
-  commitment: string;
-  /** Fiat-Shamir challenge derived from the commitment + registry. */
-  challenge: string;
-  /** Response binding the committed records to the approved-schema predicate. */
-  response: string;
-  /** Registry the proof was constructed against (so verifiers can pin it). */
-  registryDigest: string;
-  /** Wall-clock time the proof was generated (for freshness checks). */
-  createdAt: string;
-}
-
-function bytesToBigInt(bytes: Uint8Array): bigint {
-  let n = 0n;
-  for (const b of bytes) n = (n << 8n) | BigInt(b);
-  return n;
-}
-
-async function sha256BigInt(input: Uint8Array): Promise<bigint> {
-  const digest = await crypto.subtle.digest('SHA-256', input);
-  return bytesToBigInt(new Uint8Array(digest));
-}
-
-/**
- * Builds a zero-knowledge proof that the supplied records satisfy the
- * registry's approved-schema predicate for at least `requiredDoses` doses,
- * without revealing dates, lot numbers, or issuer IDs.
- *
- * The construction is a Sigma-protocol style proof over a SHA-256 commitment:
- * the prover commits to the multiset of approved-schema matches, derives a
- * Fiat-Shamir challenge from the commitment and registry digest, and returns a
- * response that a verifier can check against the same public inputs. It runs
- * in O(records) hashing work, well under the 3-second budget on mobile.
- *
- * Time: O(n) hashes over the record count. Space: O(1) beyond the inputs.
- */
-export async function generateVaccinationProof(
-  records: VaccinationRecord[],
-  registry: VaccinationRegistry,
-): Promise<VaccinationProof> {
-  auditEntropySource();
-  const approved = new Set(registry.approvedSchemaIds);
-  const matches = records.filter((r) => approved.has(r.schemaId));
-  if (matches.length < registry.requiredDoses) {
-    throw new CryptographicFaultError(
-      'Cannot prove eligibility: insufficient approved vaccination doses.',
-    );
-  }
-
-  const registryDigest = toHex(
-    new Uint8Array(
-      await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(
-          JSON.stringify({
-            approvedSchemaIds: [...registry.approvedSchemaIds].sort(),
-            requiredDoses: registry.requiredDoses,
-          }),
-        ),
-      ),
-    ),
-  );
-
-  const blinding = crypto.getRandomValues(new Uint8Array(32));
-  const commitmentInput = concatBytes(
-    blinding,
-    new TextEncoder().encode(registryDigest),
-    new TextEncoder().encode(matches.map((m) => m.schemaId).sort().join('|')),
-  );
-  const commitment = toHex(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', commitmentInput)),
-  );
-
-  const challenge = toHex(
-    new Uint8Array(
-      await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(`${commitment}:${registryDigest}`),
-      ),
-    ),
-  );
-
-  const responseInput = concatBytes(
-    blinding,
-    new TextEncoder().encode(challenge),
-    new TextEncoder().encode(String(matches.length)),
-  );
-  const response = toHex(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', responseInput)),
-  );
-
-  return {
-    version: 1,
-    commitment,
-    challenge,
-    response,
-    registryDigest,
-    createdAt: new Date().toISOString(),
-  };
-}
-
-/**
- * Verifies a {@link VaccinationProof} against a pinned registry. Returns true
- * only if the proof was constructed for this exact registry and its internal
- * challenge/response binding is consistent.
- *
- * Time: O(1) hashes. Space: O(1).
- */
-export async function verifyVaccinationProof(
-  proof: VaccinationProof,
-  registry: VaccinationRegistry,
-): Promise<boolean> {
-  if (proof.version !== 1) return false;
-  const expectedRegistryDigest = toHex(
-    new Uint8Array(
-      await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(
-          JSON.stringify({
-            approvedSchemaIds: [...registry.approvedSchemaIds].sort(),
-            requiredDoses: registry.requiredDoses,
-          }),
-        ),
-      ),
-    ),
-  );
-  if (proof.registryDigest !== expectedRegistryDigest) return false;
-
-  const expectedChallenge = toHex(
-    new Uint8Array(
-      await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(`${proof.commitment}:${proof.registryDigest}`),
-      ),
-    ),
-  );
-  return proof.challenge === expectedChallenge && proof.response.length === 64;
-}
-
-// Appointment live-chat primitives are kept in a focused module but re-exported
-// here so crypto consumers have one stable entry point.
-export {
-  createChatEphemeralKeyPair,
-  deriveChatSessionKey,
-  encryptChatMessage,
-  decryptChatMessage,
-  destroyChatSession,
-} from './cryptoChat';
-export type { ChatEphemeralKeyPair, EncryptedChatPayload } from './cryptoChat';

@@ -2,13 +2,11 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import AppointmentCard from '@/components/doctor/AppointmentCard';
-import { Appointment, MedicalRecord } from '@/types';
+import { type Appointment, type MedicalRecord } from '@/types';
 import { updateAppointmentStatus, fetchRecords } from '@/services/api.service';
 import {
   createSorobanMockHandlers,
   LedgerStateMachine,
-  sendTransactionPending,
-  pollTransactionSuccess,
   pollTransactionFailed,
   mockAccount,
 } from '@/__mocks__/sorobanRpc';
@@ -200,7 +198,7 @@ describe('Soroban mock harness integration', () => {
       'contract:appt:missing',
     ]);
     expect(entries).toHaveLength(2);
-    expect(entries[0].val).toEqual({
+    expect(entries[0]!.val).toEqual({
       status: 'confirmed',
       doctorId: 'doc1',
     });

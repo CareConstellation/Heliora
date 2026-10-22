@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { Keypair, StrKey, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { Keypair, StrKey, nativeToScVal, scValToNative, type xdr } from '@stellar/stellar-sdk';
 import type { AppointmentAttendance, DailyParticipant, DisputeAttestation } from '@/types';
 
 const oracle = Keypair.random();

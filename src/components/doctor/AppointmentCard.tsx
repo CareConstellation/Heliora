@@ -4,7 +4,7 @@ import { useState, memo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Appointment, MedicalRecord } from '@/types';
 import { fetchRecords, updateAppointmentStatus } from '@/services/api.service';
-import { withVideoRoom, isVideoLinkActive } from '@/lib/video';
+import { withVideoRoom } from '@/lib/video';
 import NewRecordForm from './NewRecordForm';
 import RecordDetailDrawer from '@/components/records/RecordDetailDrawer';
 import DoctorAppointmentDrawer from '@/components/appointments/DoctorAppointmentDrawer';

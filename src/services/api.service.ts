@@ -1,7 +1,7 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier } from '@/types';
-import { verifyDelegationVoucher, type DelegationVoucher, type EnvelopeHeader, type EnvelopeRecipient } from '@/lib/crypto';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial } from '@/types';
+import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
  * Shared axios instance for all API calls.
@@ -48,44 +48,6 @@ const normalizeError = (error: AxiosError<{ message?: string; error?: string }>)
 };
 
 api.interceptors.response.use((response) => response, normalizeError);
-
-// Anti-replay protection and nonce verification interceptor for off-chain delegation vouchers (Issue #35)
-api.interceptors.request?.use((config) => {
-  const headers = config.headers as Record<string, unknown> | undefined;
-  const voucherHeader = headers?.['x-delegation-voucher'] || headers?.['X-Delegation-Voucher'];
-  let voucher: DelegationVoucher | undefined;
-
-  if (voucherHeader) {
-    try {
-      voucher = typeof voucherHeader === 'string' ? JSON.parse(voucherHeader) : (voucherHeader as DelegationVoucher);
-    } catch {
-      const apiError: ApiError = {
-        message: 'Malformed X-Delegation-Voucher header JSON.',
-        status: 400,
-        code: 'MALFORMED_VOUCHER',
-        data: null,
-      };
-      return Promise.reject(apiError);
-    }
-  } else if (config.data && typeof config.data === 'object' && 'voucher' in config.data) {
-    voucher = (config.data as { voucher?: DelegationVoucher }).voucher;
-  }
-
-  if (voucher) {
-    const verification = verifyDelegationVoucher(voucher);
-    if (!verification.isValid) {
-      const apiError: ApiError = {
-        message: verification.error || 'Delegation voucher verification failed.',
-        status: 400,
-        code: verification.code || 'INVALID_DELEGATION_VOUCHER',
-        data: { voucher, code: verification.code },
-      };
-      return Promise.reject(apiError);
-    }
-  }
-
-  return config;
-});
 
 /**
  * Axios instance for SEP-38 anchor quote servers. Requests use absolute URLs from
@@ -365,6 +327,67 @@ export const updateAvailabilityConfig = (
 ) =>
   api
     .put<AvailabilityBufferConfig>('/doctors/availability-config', { doctorAddress, ...config })
+    .then((r) => r.data);
+
+// Zero-knowledge eligibility
+
+/**
+ * Fetch the eligibility commitments an issuer registered for a patient.
+ * Proofs are only accepted against these commitments.
+ * @param address - Patient's wallet address.
+ * @returns {@link EligibilityCommitments}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchEligibilityCommitments = (address: string) =>
+  api
+    .get<EligibilityCommitments>(`/users/${address}/eligibility-commitments`)
+    .then((r) => r.data);
+
+// IPFS ciphertext storage
+
+/**
+ * Ask the backend for a short-lived Pinata presigned upload URL, so the Pinata JWT never reaches the browser.
+ * The backend signs it (`POST https://uploads.pinata.cloud/v3/files/sign`) with
+ * `cid_version: "unixfs-v1-2025"`; Pinata only honours upload options set when the URL is signed.
+ * @returns The signed upload URL.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const createIpfsUploadUrl = () =>
+  api.post<{ url: string }>('/records/ipfs/upload-url').then((r) => r.data.url);
+
+/**
+ * Upload a ciphertext to Pinata's public IPFS network through a presigned URL. The URL's
+ * `unixfs-v1-2025` CID profile makes the returned CID reproducible client-side.
+ * @param signedUrl - URL from {@link createIpfsUploadUrl}.
+ * @param ciphertext - Encrypted record bytes.
+ * @returns The CID Pinata assigned (`data.cid`).
+ * @throws On network failure or non-2xx response.
+ */
+export const uploadCiphertextToIpfs = (signedUrl: string, ciphertext: Blob) => {
+  const form = new FormData();
+  form.append('file', ciphertext, 'record.enc');
+  form.append('network', 'public');
+  return axios.post<{ data: { cid: string } }>(signedUrl, form).then((r) => r.data.data.cid);
+};
+
+/**
+ * Fetch the IPFS pinning status of a record's ciphertext.
+ * @param recordId - Record ID.
+ * @returns {@link RecordIpfsStorage}.
+ * @throws {ApiError} On network failure or non-2xx response (404 if the record is not stored on IPFS).
+ */
+export const fetchRecordIpfsStorage = (recordId: string) =>
+  api.get<RecordIpfsStorage>(`/records/${recordId}/ipfs`).then((r) => r.data);
+
+/**
+ * Fetch the AES-256-GCM key and IV stored for a record at upload.
+ * @param recordId - Record ID.
+ * @returns {@link RecordKeyMaterial}.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchRecordKeyMaterial = (recordId: string) =>
+  api.get<RecordKeyMaterial>(`/records/${recordId}/key`).then((r) => r.data);
+
 // Encrypted record envelopes — recipient keys and header-only recipient updates
 
 /**
@@ -543,33 +566,3 @@ export const cancelAppointmentWithPenalty = (appointmentId: string, confirm: boo
   api
     .post<Appointment>(`/appointments/${appointmentId}/cancel-with-penalty`, { confirm })
     .then((r) => r.data);
-
-/**
- * Issue #35: Redeem an off-chain signed delegation voucher with anti-replay protection.
- * Client-side interceptor verifies monotonic sequence, timestamp skew (<=120s), and 5m window before dispatch.
- * @param voucher - The signed DelegationVoucher.
- * @returns Redemption confirmation receipt.
- * @throws {ApiError} On verification failure, replay attack, or non-2xx response.
- */
-export const redeemDelegationVoucher = (voucher: DelegationVoucher) => {
-  const verification = verifyDelegationVoucher(voucher);
-  if (!verification.isValid) {
-    const apiError: ApiError = {
-      message: verification.error || 'Delegation voucher verification failed.',
-      status: 400,
-      code: verification.code || 'INVALID_DELEGATION_VOUCHER',
-      data: { voucher, code: verification.code },
-    };
-    return Promise.reject(apiError);
-  }
-  return api
-    .post<{ success: boolean; redeemedAt: string; voucherId: string }>('/vouchers/redeem', { voucher })
-    .then((r) => r.data);
-};
-
-/**
- * Verifies a delegation voucher directly using client-side cryptographic anti-replay logic.
- */
-export const verifyDelegationVoucherClient = (voucher: DelegationVoucher) =>
-  verifyDelegationVoucher(voucher);
-

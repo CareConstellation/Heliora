@@ -1,14 +1,9 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/useToast';
-import type {
-  BulkImportResponse,
-  BiometricMetricCategory,
-  BiometricImportSummary,
-  HelioraObservation,
-} from '@/types';
+import type { BulkImportResponse } from '@/types';
 import {
   parseCSV,
   parseFHIR,
@@ -16,12 +11,7 @@ import {
   validateRowsChunked,
   analyzeErrors,
   executeBatchImportWithRollback,
-  PreviewRow,
-  streamParseAppleHealthXML,
-  parseGoogleFitJSON,
-  biometricObservationsToImportRows,
-  filterBiometricObservations,
-  summarizeBiometricObservations,
+  type PreviewRow,
 } from '@/lib/bulkRecordParser';
 import {
   Upload,
@@ -30,16 +20,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
-  RefreshCw,
+
   AlertTriangle,
   RotateCcw,
   Check,
-  Activity,
-  Heart,
-  Moon,
-  Footprints,
-  Calendar,
-  Filter,
 } from 'lucide-react';
 
 interface Props {
@@ -47,7 +31,7 @@ interface Props {
   onComplete?: (result: BulkImportResponse) => void;
 }
 
-const ACCEPTED_FORMATS = '.csv,.json,.xml';
+const ACCEPTED_FORMATS = '.csv,.json';
 const PAGE_SIZE = 25;
 
 export default function BulkRecordImport({ patientAddress, onComplete }: Props) {
@@ -73,33 +57,18 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
   const [rolledBackCount, setRolledBackCount] = useState<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Biometric Ingestion State (Issue #79)
-  const [rawBiometrics, setRawBiometrics] = useState<HelioraObservation[] | null>(null);
-  const [selectedCategories, setSelectedCategories] = useState<BiometricMetricCategory[]>([
-    'resting_heart_rate',
-    'step_count',
-    'sleep',
-  ]);
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
-  const [streamingProgress, setStreamingProgress] = useState<{
-    processed: number;
-    total: number;
-    extracted: number;
-  } | null>(null);
-
   const analysis = useMemo(() => {
     if (!preview) return null;
     return analyzeErrors(preview);
   }, [preview]);
 
-  const validCount = preview?.filter((r: PreviewRow) => r._valid).length ?? 0;
+  const validCount = preview?.filter((r) => r._valid).length ?? 0;
   const errorCount = preview ? preview.length - validCount : 0;
 
   const filteredRows = useMemo(() => {
     if (!preview) return [];
-    if (filterMode === 'errors') return preview.filter((r: PreviewRow) => !r._valid);
-    if (filterMode === 'valid') return preview.filter((r: PreviewRow) => r._valid);
+    if (filterMode === 'errors') return preview.filter((r) => !r._valid);
+    if (filterMode === 'valid') return preview.filter((r) => r._valid);
     return preview;
   }, [preview, filterMode]);
 
@@ -109,158 +78,23 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
     return filteredRows.slice(start, start + PAGE_SIZE);
   }, [filteredRows, currentPage]);
 
-  const applyBiometricFilter = useCallback(
-    async (
-      observations: HelioraObservation[],
-      categories: BiometricMetricCategory[],
-      start: string,
-      end: string,
-    ) => {
-      const filterOptions: {
-        categories?: BiometricMetricCategory[] | undefined;
-        startDate?: string | undefined;
-        endDate?: string | undefined;
-      } = { categories };
-      if (start) filterOptions.startDate = start;
-      if (end) filterOptions.endDate = end;
-
-      const filtered = filterBiometricObservations(observations, filterOptions);
-
-      const rows = biometricObservationsToImportRows(filtered);
-      const validated = await validateRowsChunked(rows, 250);
-      setPreview(validated);
-      setCurrentPage(1);
-    },
-    [],
-  );
-
-  function toggleCategory(category: BiometricMetricCategory) {
-    if (!rawBiometrics) return;
-    let next: BiometricMetricCategory[];
-    if (selectedCategories.includes(category)) {
-      if (selectedCategories.length === 1) {
-        toast('At least one metric category must remain selected.', 'error');
-        return;
-      }
-      next = selectedCategories.filter((c: BiometricMetricCategory) => c !== category);
-    } else {
-      next = [...selectedCategories, category];
-    }
-    setSelectedCategories(next);
-    applyBiometricFilter(rawBiometrics, next, startDate, endDate);
-  }
-
-  function applyDatePreset(preset: 'all' | '30d' | '90d' | 'ytd') {
-    if (!rawBiometrics) return;
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
-    let start = '';
-    let end = todayStr;
-
-    if (preset === '30d') {
-      const d = new Date(now.getTime() - 30 * 86400000);
-      start = d.toISOString().slice(0, 10);
-    } else if (preset === '90d') {
-      const d = new Date(now.getTime() - 90 * 86400000);
-      start = d.toISOString().slice(0, 10);
-    } else if (preset === 'ytd') {
-      start = `${now.getFullYear()}-01-01`;
-    } else if (preset === 'all') {
-      start = '';
-      end = '';
-    }
-
-    setStartDate(start);
-    setEndDate(end);
-    applyBiometricFilter(rawBiometrics, selectedCategories, start, end);
-  }
-
-  function handleCustomDateChange(newStart: string, newEnd: string) {
-    setStartDate(newStart);
-    setEndDate(newEnd);
-    if (rawBiometrics) {
-      applyBiometricFilter(rawBiometrics, selectedCategories, newStart, newEnd);
-    }
-  }
-
   const handleFile = useCallback(
     async (file: File) => {
       setFileName(file.name);
       setPreview(null);
-      setRawBiometrics(null);
       setValidationProgress({ processed: 0, total: 1 });
       setImportStatus('idle');
       setCurrentPage(1);
 
       try {
-        // 1. Apple Health XML Stream Parsing (Worker-based SAX parser)
-        if (file.name.endsWith('.xml')) {
-          setValidationProgress(null);
-          setStreamingProgress({ processed: 0, total: file.size, extracted: 0 });
-
-          const { observations, summary } = await streamParseAppleHealthXML(
-            file,
-            undefined,
-            (processed, total, extracted) => {
-              setStreamingProgress({ processed, total, extracted });
-            },
-          );
-          setStreamingProgress(null);
-
-          if (observations.length === 0) {
-            throw new Error('No resting heart rate, step count, or sleep records found in Apple Health XML.');
-          }
-
-          setRawBiometrics(observations);
-          const initialCategories: BiometricMetricCategory[] = ['resting_heart_rate', 'step_count', 'sleep'];
-          setSelectedCategories(initialCategories);
-          setStartDate('');
-          setEndDate('');
-
-          const rows = biometricObservationsToImportRows(observations);
-          const validated = await validateRowsChunked(rows, 250);
-          setPreview(validated);
-          toast(`Stream-parsed ${observations.length} daily physiological metrics from Apple Health.`, 'success');
-          return;
-        }
-
-        // 2. Google Fit Takeout JSON or standard FHIR / CSV
         const text = await file.text();
         let rawRows;
-
         if (file.name.endsWith('.csv')) {
           rawRows = parseCSV(text);
         } else if (file.name.endsWith('.json')) {
-          const isGoogleFit =
-            text.includes('com.google.') ||
-            text.includes('heart_rate') ||
-            text.includes('step_count') ||
-            text.includes('Data Points') ||
-            file.name.toLowerCase().includes('fit');
-
-          if (isGoogleFit) {
-            const { observations, summary } = parseGoogleFitJSON(text);
-            if (observations.length === 0) {
-              throw new Error('No compatible biometric metrics (resting HR, steps, sleep) found in Google Fit JSON.');
-            }
-
-            setRawBiometrics(observations);
-            const initialCategories: BiometricMetricCategory[] = ['resting_heart_rate', 'step_count', 'sleep'];
-            setSelectedCategories(initialCategories);
-            setStartDate('');
-            setEndDate('');
-
-            const rows = biometricObservationsToImportRows(observations);
-            const validated = await validateRowsChunked(rows, 250);
-            setPreview(validated);
-            setValidationProgress(null);
-            toast(`Extracted and normalized ${observations.length} daily metrics from Google Fit.`, 'success');
-            return;
-          }
-
           rawRows = parseFHIR(JSON.parse(text));
         } else {
-          throw new Error('Unsupported format. Please upload .csv, .json (FHIR or Google Fit), or .xml (Apple Health).');
+          throw new Error('Unsupported file format. Please upload a .csv or .json file.');
         }
 
         if (rawRows.length === 0) {
@@ -284,9 +118,7 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
         const msg = err instanceof Error ? err.message : 'Failed to parse file syntax.';
         toast(msg, 'error');
         setValidationProgress(null);
-        setStreamingProgress(null);
         setFileName('');
-        setRawBiometrics(null);
       }
     },
     [toast],
@@ -294,18 +126,13 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   }
 
   function clearPreview() {
     setPreview(null);
     setFileName('');
     setValidationProgress(null);
-    setStreamingProgress(null);
-    setRawBiometrics(null);
-    setSelectedCategories(['resting_heart_rate', 'step_count', 'sleep']);
-    setStartDate('');
-    setEndDate('');
     setImportStatus('idle');
     if (inputRef.current) inputRef.current.value = '';
   }
@@ -318,7 +145,9 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
   ) {
     if (!preview) return;
     const updated = [...preview];
-    const targetRow = { ...updated[rowIndex] };
+    const current = updated[rowIndex];
+    if (!current) return;
+    const targetRow = { ...current };
     targetRow[field] = value;
 
     // Immediately re-validate the updated row
@@ -331,8 +160,8 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
   async function handleImport() {
     if (!preview) return;
     const validRecords = preview
-      .filter((r: PreviewRow) => r._valid)
-      .map(({ _row, _valid, _errors, ...r }: PreviewRow) => r);
+      .filter((r) => r._valid)
+      .map(({ _row, _valid, _errors, ...r }) => r);
 
     if (validRecords.length === 0) {
       toast('No valid records to import. Please resolve errors in the grid.', 'error');
@@ -358,25 +187,22 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
 
       setImportStatus('completed');
       toast(`Successfully imported all ${result.totalImported} records.`, 'success');
-      queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
-      queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['encryptedRecords', patientAddress] });
+      void queryClient.invalidateQueries({ queryKey: ['patient-records', patientAddress] });
 
       onComplete?.({
         imported: result.totalImported,
         failed: 0,
         errors: [],
-        records: preview.filter((r: PreviewRow) => r._valid).map((r: PreviewRow, i: number) => {
-          const rec: MedicalRecord = {
-            id: (result.recordIds && result.recordIds[i]) ? result.recordIds[i]! : `rec-${i}`,
-            date: r.date,
-            doctorName: r.doctorName,
-            diagnosis: r.diagnosis,
-            patientAddress,
-          };
-          if (r.prescription) rec.prescription = r.prescription;
-          if (r.notes) rec.notes = r.notes;
-          return rec;
-        }),
+        records: preview.filter((r) => r._valid).map((r, i) => ({
+          id: result.recordIds[i] || `rec-${i}`,
+          date: r.date,
+          doctorName: r.doctorName,
+          diagnosis: r.diagnosis,
+          ...(r.prescription !== undefined ? { prescription: r.prescription } : {}),
+          ...(r.notes !== undefined ? { notes: r.notes } : {}),
+          patientAddress,
+        })),
       });
     } catch (err: unknown) {
       const isAborted = abortController.signal.aborted;
@@ -423,31 +249,10 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
         <>
           <button
             onClick={() => inputRef.current?.click()}
-            disabled={!!validationProgress || !!streamingProgress}
+            disabled={!!validationProgress}
             className="w-full rounded-lg border-2 border-dashed border-slate-200 py-10 flex flex-col items-center gap-3 hover:border-green hover:bg-slate-50/50 transition-colors disabled:opacity-50"
           >
-            {streamingProgress ? (
-              <>
-                <Loader2 className="w-8 h-8 animate-spin text-green" />
-                <span className="text-sm font-semibold text-slate-800">
-                  Stream-parsing Apple Health XML in SAX worker…
-                </span>
-                <span className="text-xs text-slate-500">
-                  {(streamingProgress.processed / (1024 * 1024)).toFixed(1)} MB / {(streamingProgress.total / (1024 * 1024)).toFixed(1)} MB processed ({streamingProgress.extracted} records found)
-                </span>
-                <div className="w-56 bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className="bg-green h-1.5 rounded-full transition-all duration-150"
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        (streamingProgress.processed / (streamingProgress.total || 1)) * 100,
-                      )}%`,
-                    }}
-                  />
-                </div>
-              </>
-            ) : validationProgress ? (
+            {validationProgress ? (
               <>
                 <Loader2 className="w-7 h-7 animate-spin text-green" />
                 <span className="text-sm font-medium text-slate-700">
@@ -467,15 +272,10 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
               </>
             ) : (
               <>
-                <div className="flex items-center gap-2 text-slate-400">
-                  <FileText className="w-7 h-7" />
-                  <Activity className="w-7 h-7 text-green" />
-                </div>
-                <span className="text-sm font-semibold text-slate-700">
-                  Choose CSV, FHIR JSON, Apple Health XML, or Google Takeout JSON
-                </span>
-                <span className="text-xs text-slate-400 text-center max-w-md">
-                  Supports EHR spreadsheets, FHIR bundles, Apple Health <code className="text-slate-600 font-mono">export.xml</code> (SAX stream parsed), and Google Takeout <code className="text-slate-600 font-mono">fit.json</code>
+                <FileText className="w-8 h-8 text-slate-400" />
+                <span className="text-sm font-semibold text-slate-700">Choose CSV or FHIR JSON file</span>
+                <span className="text-xs text-slate-400">
+                  Pre-flight validation checks dates, required clinical fields, and injection safety
                 </span>
               </>
             )}
@@ -501,12 +301,6 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
               <span className="text-slate-600 font-medium">{preview.length} total rows</span>
               <span className="text-green font-medium">({validCount} valid)</span>
               {errorCount > 0 && <span className="text-red-600 font-medium">({errorCount} invalid)</span>}
-              {rawBiometrics && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium text-xs border border-emerald-200">
-                  <Activity className="w-3 h-3 text-emerald-600" />
-                  Biometric Mode
-                </span>
-              )}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -518,129 +312,6 @@ export default function BulkRecordImport({ patientAddress, onComplete }: Props) 
               </button>
             </div>
           </div>
-
-          {/* Biometric Ingestion Controls: Selective Category & Date Interval Filters (Issue #79) */}
-          {rawBiometrics && (
-            <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
-                  <Filter className="w-4 h-4 text-emerald-600" />
-                  <span>Selective Biometric Import Filters</span>
-                  <span className="text-2xs font-normal text-slate-500">
-                    ({rawBiometrics.length} total raw observations found)
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className="text-slate-500 text-2xs font-medium">Interval Presets:</span>
-                  <button
-                    type="button"
-                    onClick={() => applyDatePreset('all')}
-                    className="px-2 py-0.5 rounded text-2xs font-medium bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  >
-                    All Time
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyDatePreset('30d')}
-                    className="px-2 py-0.5 rounded text-2xs font-medium bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  >
-                    30 Days
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyDatePreset('90d')}
-                    className="px-2 py-0.5 rounded text-2xs font-medium bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  >
-                    90 Days
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyDatePreset('ytd')}
-                    className="px-2 py-0.5 rounded text-2xs font-medium bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  >
-                    This Year
-                  </button>
-                </div>
-              </div>
-
-              {/* Category Checkbox Pills */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => toggleCategory('resting_heart_rate')}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    selectedCategories.includes('resting_heart_rate')
-                      ? 'bg-rose-50 border border-rose-300 text-rose-700 shadow-2xs'
-                      : 'bg-white border border-slate-200 text-slate-400 hover:border-slate-300'
-                  }`}
-                >
-                  <Heart className={`w-3.5 h-3.5 ${selectedCategories.includes('resting_heart_rate') ? 'text-rose-600' : 'text-slate-400'}`} />
-                  <span>Resting Heart Rate (LOINC 40443-4)</span>
-                  {selectedCategories.includes('resting_heart_rate') && <Check className="w-3 h-3 text-rose-600" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => toggleCategory('step_count')}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    selectedCategories.includes('step_count')
-                      ? 'bg-amber-50 border border-amber-300 text-amber-700 shadow-2xs'
-                      : 'bg-white border border-slate-200 text-slate-400 hover:border-slate-300'
-                  }`}
-                >
-                  <Footprints className={`w-3.5 h-3.5 ${selectedCategories.includes('step_count') ? 'text-amber-600' : 'text-slate-400'}`} />
-                  <span>Step Count (LOINC 55423-8)</span>
-                  {selectedCategories.includes('step_count') && <Check className="w-3 h-3 text-amber-600" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => toggleCategory('sleep')}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    selectedCategories.includes('sleep')
-                      ? 'bg-indigo-50 border border-indigo-300 text-indigo-700 shadow-2xs'
-                      : 'bg-white border border-slate-200 text-slate-400 hover:border-slate-300'
-                  }`}
-                >
-                  <Moon className={`w-3.5 h-3.5 ${selectedCategories.includes('sleep') ? 'text-indigo-600' : 'text-slate-400'}`} />
-                  <span>Sleep Metrics (LOINC 93832-4)</span>
-                  {selectedCategories.includes('sleep') && <Check className="w-3 h-3 text-indigo-600" />}
-                </button>
-              </div>
-
-              {/* Date Interval Inputs */}
-              <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-slate-600">
-                <div className="flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                  <span className="text-2xs font-medium text-slate-500">From:</span>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => handleCustomDateChange(e.target.value, endDate)}
-                    className="px-2 py-1 text-xs rounded border border-slate-200 bg-white focus:outline-none focus:ring-1 focus:ring-green"
-                  />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-2xs font-medium text-slate-500">To:</span>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => handleCustomDateChange(startDate, e.target.value)}
-                    className="px-2 py-1 text-xs rounded border border-slate-200 bg-white focus:outline-none focus:ring-1 focus:ring-green"
-                  />
-                </div>
-                {(startDate || endDate) && (
-                  <button
-                    type="button"
-                    onClick={() => handleCustomDateChange('', '')}
-                    className="text-2xs text-slate-400 hover:text-slate-600 underline"
-                  >
-                    Clear dates
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* Pre-Flight Error Analysis Banner */}
           {analysis && analysis.errorCount > 0 && (

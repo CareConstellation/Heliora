@@ -169,8 +169,10 @@ export function startQualityTiering(
     prevTimestamp = latestTimestamp;
   };
 
-  const handle = setInterval(tick, intervalMs);
-  tick();
+  const handle = setInterval(() => {
+    void tick();
+  }, intervalMs);
+  void tick();
   return () => clearInterval(handle);
 }
 
@@ -351,8 +353,10 @@ export function startTelemetry(
     }
   };
 
-  const handle = setInterval(tick, TELEMETRY_INTERVAL_MS);
-  tick();
+  const handle = setInterval(() => {
+    void tick();
+  }, TELEMETRY_INTERVAL_MS);
+  void tick();
 
   return async () => {
     stopped = true;

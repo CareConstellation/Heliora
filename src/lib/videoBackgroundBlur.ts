@@ -78,9 +78,9 @@ export class VideoBackgroundBlur {
             const ny = Math.min(Math.max(y + dy, 0), height - 1);
             const nidx = (ny * width + nx) * 4;
 
-            r += original[nidx];
-            g += original[nidx + 1];
-            b += original[nidx + 2];
+            r += original[nidx] ?? 0;
+            g += original[nidx + 1] ?? 0;
+            b += original[nidx + 2] ?? 0;
             count++;
           }
         }
@@ -149,11 +149,13 @@ export class VideoBackgroundBlur {
   }
 
   isSupported(): boolean {
-    return !!(
-      navigator.mediaDevices &&
-      navigator.mediaDevices.getUserMedia &&
-      HTMLCanvasElement.prototype.captureStream
-    );
+    const canvasProto = HTMLCanvasElement.prototype as unknown as {
+      captureStream?: unknown;
+    };
+    const mediaDevices = navigator.mediaDevices as unknown as
+      | { getUserMedia?: unknown }
+      | undefined;
+    return !!(mediaDevices?.getUserMedia && canvasProto.captureStream);
   }
 
   destroy(): void {

@@ -118,8 +118,8 @@ export function createDeepLink(
 ): SEP0007TransactionRequest {
   return {
     xdr,
-    callback: callbackUrl,
-    message,
+    ...(callbackUrl ? { callback: callbackUrl } : {}),
+    ...(message ? { message } : {}),
     chainId: process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet' ? 'public' : 'testnet',
   };
 }

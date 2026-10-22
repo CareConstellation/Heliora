@@ -77,7 +77,7 @@ export default function WatermarkedRecordViewer({ src, alt, type, className }: P
   }, [src, type, publicKey]);
 
   useEffect(() => {
-    applyWatermark();
+    void applyWatermark();
   }, [applyWatermark]);
 
   const preventExtraction = useCallback((e: React.MouseEvent | React.DragEvent) => {

@@ -20,7 +20,7 @@ export default function DicomViewer({ src }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const res = await fetch(src);
         const raw = new File([await res.arrayBuffer()], 'study.dcm');

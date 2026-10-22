@@ -2,6 +2,9 @@ import { withSentryConfig } from '@sentry/nextjs';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Linting runs as a separate CI step (`npm run lint`); Next's bundled
+  // ESLint integration uses options removed from the installed ESLint version.
+  eslint: { ignoreDuringBuilds: true },
   images: {
     remotePatterns: [
       {

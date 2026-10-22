@@ -16,7 +16,7 @@ export interface BiomarkerTrendData {
   observations: BiomarkerObservation[];
 }
 
-const BIOMARKER_DEFINITIONS = {
+export const BIOMARKER_DEFINITIONS = {
   HbA1c: {
     code: '4548-4',
     unit: '%',
@@ -73,11 +73,13 @@ const BIOMARKER_DEFINITIONS = {
     referenceMax: 150,
     abnormalThreshold: 200,
   },
-};
+} as const;
+
+export type BiomarkerName = keyof typeof BIOMARKER_DEFINITIONS;
 
 function extractNumericValue(diagnosis: string): number | null {
   const match = diagnosis.match(/(\d+(?:\.\d+)?)/);
-  return match ? parseFloat(match[1]) : null;
+  return match?.[1] ? parseFloat(match[1]) : null;
 }
 
 function determineBiomarkerStatus(
@@ -97,7 +99,7 @@ function determineBiomarkerStatus(
 
 export function extractBiomarkerFromRecords(
   records: MedicalRecord[],
-  biomarkerName: keyof typeof BIOMARKER_DEFINITIONS,
+  biomarkerName: BiomarkerName,
 ): BiomarkerTrendData | null {
   const definition = BIOMARKER_DEFINITIONS[biomarkerName];
   if (!definition) return null;
@@ -107,7 +109,7 @@ export function extractBiomarkerFromRecords(
   if (relevantRecords.length === 0) return null;
 
   const observations: BiomarkerObservation[] = relevantRecords
-    .map((record) => {
+    .map((record): BiomarkerObservation | null => {
       const value = extractNumericValue(record.diagnosis);
       if (value === null) return null;
 

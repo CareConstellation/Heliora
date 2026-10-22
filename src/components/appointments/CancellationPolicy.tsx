@@ -61,7 +61,7 @@ interface EstimateProps {
   }) => void;
 }
 
-export function CancellationEstimateDisplay({ appointmentId, fee, onEstimateLoaded }: EstimateProps) {
+export function CancellationEstimateDisplay({ appointmentId, onEstimateLoaded }: EstimateProps) {
   const { data: estimate, isLoading, isError } = useQuery({
     queryKey: ['cancellation-estimate', appointmentId],
     queryFn: () => fetchCancellationEstimate(appointmentId),

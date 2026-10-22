@@ -90,16 +90,14 @@ export async function batchInitializeSlots(
     for (let j = 0; j < results.length; j++) {
       const result = results[j];
       const item = chunk[j];
+      if (!result || !item) continue;
       if (result.status === 'fulfilled' && result.value) {
         item.status = 'confirmed';
         item.txHash = result.value;
         progress.completed++;
       } else {
         item.status = 'failed';
-        item.error =
-          result.status === 'rejected'
-            ? String(result.reason)
-            : 'Unknown error';
+        item.error = result.status === 'rejected' ? String(result.reason) : 'Unknown error';
         progress.failed++;
       }
       progress.pending--;

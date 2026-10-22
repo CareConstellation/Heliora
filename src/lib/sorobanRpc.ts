@@ -4,8 +4,6 @@
  * (Issue #1)
  */
 
-import { Keypair, FeeBumpTransaction, TransactionBuilder, Networks, BASE_FEE } from '@stellar/stellar-sdk';
-
 export interface ResourceEstimate {
   cpuInstructions: number;
   memoryBytes: number;
@@ -36,7 +34,7 @@ export async function simulateSorobanInvocation(
   contractId: string,
   method: string,
   args: unknown[],
-  sourcePublicKey: string,
+  _sourcePublicKey: string,
 ): Promise<SimulationResult> {
   try {
     // Estimate CPU instructions based on method complexity
@@ -79,7 +77,7 @@ export async function simulateSorobanInvocation(
  */
 function estimateCPUInstructions(method: string, args: unknown[]): number {
   const baseCost = 1000; // baseline CPU cost per invocation
-  const argComplexity = args.reduce((sum, arg) => {
+  const argComplexity = args.reduce<number>((sum, arg) => {
     if (arg === null || arg === undefined) return sum + 10;
     if (typeof arg === 'string') return sum + arg.length * 2;
     if (typeof arg === 'object') return sum + JSON.stringify(arg).length;
