@@ -243,6 +243,37 @@ export interface BulkImportResponse {
   records: MedicalRecord[];
 }
 
+export type BiometricMetricCategory = 'resting_heart_rate' | 'step_count' | 'sleep';
+
+export interface HelioraObservation {
+  id: string;
+  category: BiometricMetricCategory;
+  code: string;
+  display: string;
+  date: string;
+  value: number;
+  unit: string;
+  source: 'Apple Health' | 'Google Fit';
+  rawRecordCount?: number | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface BiometricImportFilter {
+  categories?: BiometricMetricCategory[] | undefined;
+  startDate?: string | undefined;
+  endDate?: string | undefined;
+}
+
+export interface BiometricImportSummary {
+  totalRecordsProcessed: number;
+  totalDailyObservations: number;
+  byCategory: Record<BiometricMetricCategory, number>;
+  dateRange: {
+    start: string | null;
+    end: string | null;
+  };
+}
+
 export interface EncounterNote {
   id: string;
   appointmentId: string;
