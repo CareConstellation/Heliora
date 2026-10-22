@@ -11,6 +11,7 @@
 3. [State Management](#state-management)
 4. [API Service Layer](#api-service-layer)
 5. [Stellar Integration](#stellar-integration)
+   - [Wallet-Signed Security Features](#wallet-signed-security-features)
 6. [Role-Based Routing](#role-based-routing)
 7. [Adding a New Page](#adding-a-new-page)
 8. [Data-Flow Diagram](#data-flow-diagram)
@@ -251,6 +252,20 @@ await server.submitTransaction(TransactionBuilder.fromXDR(signedXdr /* passphras
 | `NEXT_PUBLIC_HORIZON_URL`     | `https://horizon-testnet.stellar.org`                                              | `https://horizon.stellar.org` |
 | Network passphrase            | `Networks.TESTNET`                                                                 | `Networks.PUBLIC`             |
 | XLM                           | Free via [Friendbot](https://laboratory.stellar.org/#account-creator?network=test) | Real value                    |
+
+### Wallet-Signed Security Features
+
+Several features prove intent with a [SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md) message signature instead of a transaction: `freighterMessageSigner` signs and `verifySignedMessage` checks (`src/lib/stellar.ts`). Every signed message starts with a versioned domain line such as `heliora-anti-phishing-enrollment:v1`, so a signature for one purpose cannot be replayed for another.
+
+| Feature                              | Code                                                                                        | What is signed / stored                                                                                                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anti-phishing shield (#119)          | `lib/antiPhishing.ts`, `components/auth/AntiPhishingShield.tsx`                             | Secret icon + phrase in an encrypted local slot; the wallet signs the shield fingerprint at enrollment; the server returns an attestation signed by `NEXT_PUBLIC_AUTH_SIGNING_KEY`. |
+| Official domain banner (#119)        | `components/auth/OfficialDomainBanner.tsx`                                                  | Compares `window.location` with `NEXT_PUBLIC_OFFICIAL_DOMAINS` (exact hostname, HTTPS).                                                                                             |
+| Delegated resident proxy mode (#118) | `lib/delegatedProxy.ts`, `store/proxyStore.ts`, `components/doctor/ResidentSupervision.tsx` | The attending's wallet co-signs the SHA-256 hash of the approved draft; the backend logs it.                                                                                        |
+| Trusted contacts (#116)              | `lib/addressBook.ts`, `hooks/useAddressBook.ts`, `components/contacts/`                     | Contacts in an encrypted local slot; the cloud backup key is derived (HKDF) from the wallet's deterministic Ed25519 signature of a fixed message.                                   |
+| Account merge (#117)                 | `lib/stellar.ts` (merge helpers), `app/dashboard/patient/merge/`                            | One atomic transaction pays out assets, removes trustlines and data entries, then `AccountMerge`s, only after the record pointers are confirmed on the new account.                 |
+
+`src/lib/encryptedLocalStore.ts` provides the encrypted local slots: AES-256-GCM with a non-extractable key in IndexedDB, bound to `namespace:owner` through the GCM additional data.
 
 ---
 

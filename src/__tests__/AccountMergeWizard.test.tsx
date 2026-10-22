@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import AccountMergeWizard from '@/app/dashboard/patient/merge/AccountMergeWizard';
 import {
   confirmAccountClosed,
@@ -59,7 +59,7 @@ function sourceSnapshot(): MergeAccountSnapshot {
   };
 }
 
-function destinationSnapshot(withTrustline: boolean): MergeAccountSnapshot {
+function destinationSnapshot(withTrustline: boolean, withPointer = false): MergeAccountSnapshot {
   return {
     publicKey: DESTINATION_KEY,
     sequence: '200',
@@ -77,9 +77,12 @@ function destinationSnapshot(withTrustline: boolean): MergeAccountSnapshot {
           },
         ]
       : [],
-    dataEntries: [],
+    dataEntries: withPointer ? [{ key: 'medical_record:HS-001', value: DESTINATION_KEY }] : [],
   };
 }
+
+/** Whether the destination exposes the reassigned pointer once the pointer transaction lands. */
+let pointerStored: boolean;
 
 function mockLookup(destinationHasTrustline: boolean, destinationExists = true) {
   mockedLookup.mockImplementation(async (publicKey: string) => {
@@ -88,7 +91,10 @@ function mockLookup(destinationHasTrustline: boolean, destinationExists = true) 
     }
     if (publicKey === DESTINATION_KEY) {
       return destinationExists
-        ? { status: 'found' as const, account: destinationSnapshot(destinationHasTrustline) }
+        ? {
+            status: 'found' as const,
+            account: destinationSnapshot(destinationHasTrustline, pointerStored),
+          }
         : { status: 'not-found' as const };
     }
     return { status: 'not-found' as const };
@@ -98,7 +104,11 @@ function mockLookup(destinationHasTrustline: boolean, destinationExists = true) 
 beforeEach(() => {
   jest.clearAllMocks();
   mockedSigner.mockImplementation(async (envelopeXdr: string) => envelopeXdr);
-  mockedSubmit.mockResolvedValue('TX_HASH');
+  pointerStored = false;
+  mockedSubmit.mockImplementation(async () => {
+    pointerStored = true;
+    return 'TX_HASH';
+  });
   mockedWait.mockResolvedValue(true);
   mockedClosed.mockResolvedValue(true);
 });
@@ -144,6 +154,35 @@ describe('AccountMergeWizard', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
   });
 
+  it('refuses to merge while the record pointers are missing on the new wallet', async () => {
+    mockLookup(true);
+    // The pointer transaction is "confirmed" but never shows up on the destination.
+    mockedSubmit.mockResolvedValue('TX_HASH');
+    render(<AccountMergeWizard />);
+
+    await screen.findByText('10.0000000 XLM');
+    fireEvent.change(screen.getByLabelText('New wallet public key'), {
+      target: { value: DESTINATION_KEY },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check new wallet' }));
+    expect(await screen.findByText('ready')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reassign pointers to new wallet' }));
+
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
+    await waitFor(() => expect(continueButton).not.toBeDisabled());
+    fireEvent.click(continueButton);
+    fireEvent.click(await screen.findByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Merge accounts' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'not on the new wallet yet (medical_record:HS-001)',
+    );
+    // Only the pointer transaction was submitted; the merge never was.
+    expect(mockedSubmit).toHaveBeenCalledTimes(1);
+    expect(mockedClosed).not.toHaveBeenCalled();
+  });
+
   it('reassigns the record pointers, merges the accounts and confirms the closure', async () => {
     mockLookup(true);
     render(<AccountMergeWizard />);
@@ -175,8 +214,12 @@ describe('AccountMergeWizard', () => {
     fireEvent.click(continueButton);
 
     expect(await screen.findByText('Final transaction breakdown')).toBeInTheDocument();
-    expect(screen.getByText('9.9999900 XLM')).toBeInTheDocument();
+    // payment + changeTrust + manageData + accountMerge at 100 stroops each
+    expect(screen.getByText('9.9999600 XLM')).toBeInTheDocument();
     expect(screen.getByText('1.0000000 XLM')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('list', { name: 'Operations' })).getAllByRole('listitem'),
+    ).toHaveLength(4);
 
     const mergeButton = screen.getByRole('button', { name: 'Merge accounts' });
     expect(mergeButton).toBeDisabled();

@@ -18,9 +18,14 @@ import {
   Wallet,
   AlertCircle,
 } from 'lucide-react';
+import { StrKey } from '@stellar/stellar-sdk';
 import { useToast } from '@/hooks/useToast';
 import { useWalletStore } from '@/store/useWalletStore';
+import { useAuthStore } from '@/store/authStore';
+import { isShieldCompromised } from '@/lib/antiPhishing';
 import { ROLE_DASHBOARD_MAP } from '@/hooks/useRoleRedirect';
+import AntiPhishingShield from '@/components/auth/AntiPhishingShield';
+import OfficialDomainBanner from '@/components/auth/OfficialDomainBanner';
 
 type Role = 'PATIENT' | 'DOCTOR' | 'HOSPITAL';
 
@@ -70,6 +75,16 @@ export default function LoginPage() {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [lastWallet, setLastWallet] = useState<string | null>(null);
+  const [shieldKey, setShieldKey] = useState(publicKey ?? '');
+  const trimmedShieldKey = shieldKey.trim();
+  const shieldKeyValid = StrKey.isValidEd25519PublicKey(trimmedShieldKey);
+  const shieldStatus = useAuthStore((s) => s.shieldStatus);
+  const shieldBlocked = shieldKeyValid && isShieldCompromised(shieldStatus);
+
+  // The wallet store rehydrates after the first render; prefill the key once it does.
+  useEffect(() => {
+    if (publicKey) setShieldKey((current) => current || publicKey);
+  }, [publicKey]);
 
   useEffect(() => {
     if (publicKey && walletRole) {
@@ -186,6 +201,8 @@ export default function LoginPage() {
         </Link>
 
         <div className="w-full max-w-md">
+          <OfficialDomainBanner />
+
           {/* Step progress */}
           <div className="flex items-center gap-2 mb-8">
             {['Select Role', 'Connect Wallet'].map((label, i) => {
@@ -309,6 +326,39 @@ export default function LoginPage() {
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
 
+              {/* Anti-phishing shield (#119) */}
+              <div className="mb-5">
+                <label htmlFor="shield-public-key" className="block text-xs text-text-2 mb-1.5">
+                  Wallet public key
+                </label>
+                <input
+                  id="shield-public-key"
+                  value={shieldKey}
+                  onChange={(e) => setShieldKey(e.target.value)}
+                  placeholder="G…"
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="w-full rounded-[10px] px-3 py-2.5 text-xs font-mono text-text-1"
+                  style={{
+                    background: 'var(--bg-inset)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                />
+                <p className="text-2xs text-text-3 mt-1.5">
+                  Enter your public key to see your personal security shield before connecting.
+                </p>
+                {trimmedShieldKey && !shieldKeyValid && (
+                  <p className="text-2xs text-red-400 mt-1">
+                    That is not a valid Stellar public key.
+                  </p>
+                )}
+                {shieldKeyValid && (
+                  <div className="mt-3">
+                    <AntiPhishingShield publicKey={trimmedShieldKey} />
+                  </div>
+                )}
+              </div>
+
               {connectError && (
                 <div
                   className="flex items-center justify-between rounded-[10px] p-3 mb-4"
@@ -332,12 +382,18 @@ export default function LoginPage() {
                 </div>
               )}
 
+              {shieldBlocked && (
+                <p className="text-xs text-red-400 mb-3">
+                  Wallet connection is disabled because your security shield could not be verified.
+                </p>
+              )}
+
               <div className="space-y-2.5 mb-5">
                 {wallets.map((wallet) => (
                   <button
                     key={wallet.id}
                     onClick={() => handleWalletConnect(wallet.id)}
-                    disabled={!!connecting}
+                    disabled={!!connecting || shieldBlocked}
                     aria-label={`Connect with ${wallet.label}`}
                     className="w-full text-left rounded-[12px] p-4 flex items-center justify-between transition-all duration-150 group disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{

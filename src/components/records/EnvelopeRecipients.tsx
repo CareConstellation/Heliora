@@ -18,6 +18,10 @@ import {
 } from '@/services/api.service';
 import { useToast } from '@/hooks/useToast';
 import { useWalletStore } from '@/store/useWalletStore';
+import { useContactResolver } from '@/hooks/useAddressBook';
+import { resolveAddressInput } from '@/lib/addressBook';
+import ContactAddressInput from '@/components/contacts/ContactAddressInput';
+import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 
 interface Props {
   recordId: string;
@@ -34,6 +38,7 @@ export default function EnvelopeRecipients({ recordId }: Props) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [address, setAddress] = useState('');
+  const { contacts } = useContactResolver();
   const queryKey = ['envelopeHeader', recordId];
 
   const {
@@ -96,8 +101,8 @@ export default function EnvelopeRecipients({ recordId }: Props) {
       <ul className="divide-y divide-border rounded-xl border border-border">
         {header.recipients.map((r) => (
           <li key={r.id} className="flex items-center justify-between px-3 py-2 text-xs">
-            <span className="font-mono text-text-1">
-              {r.id.slice(0, 6)}…{r.id.slice(-4)}
+            <span className="text-text-1">
+              <ResolvedAddress address={r.id} />
               {r.id === publicKey && <span className="ml-2 text-text-3">(you)</span>}
             </span>
             {r.id !== publicKey && (
@@ -118,18 +123,15 @@ export default function EnvelopeRecipients({ recordId }: Props) {
         className="flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          addMutation.mutate(address.trim());
+          addMutation.mutate(resolveAddressInput(address, contacts) ?? address.trim());
         }}
       >
-        <label htmlFor={`recipient-${recordId}`} className="sr-only">
-          Recipient Stellar address
-        </label>
-        <input
+        <ContactAddressInput
           id={`recipient-${recordId}`}
+          label="Recipient Stellar address"
           value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          placeholder="Provider Stellar address (G…)"
-          className="flex-1 rounded-md border border-border bg-surface-inset px-3 py-2 text-xs text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
+          onChange={setAddress}
+          placeholder="Provider Stellar address (G…) or contact name"
         />
         <button
           type="submit"

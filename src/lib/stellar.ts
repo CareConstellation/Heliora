@@ -229,6 +229,45 @@ export const freighterSigner: TransactionSigner = async (envelopeXdr, networkPas
   return signedTxXdr;
 };
 
+/** Signs an arbitrary utf-8 message with `address` (SEP-53) and returns the base64 signature. */
+export type MessageSigner = (message: string, address: string) => Promise<string>;
+
+const SEP53_PREFIX = 'Stellar Signed Message:\n';
+
+/** SEP-53 digest: `SHA-256("Stellar Signed Message:\n" || message)`. */
+export function sep53Digest(message: string): Buffer {
+  return sha256(Buffer.concat([Buffer.from(SEP53_PREFIX, 'utf8'), Buffer.from(message, 'utf8')]));
+}
+
+/**
+ * {@link MessageSigner} backed by Freighter's SEP-53 `signMessage`. Freighter v4+
+ * returns the signature as base64; older versions return a `Buffer`.
+ */
+export const freighterMessageSigner: MessageSigner = async (message, address) => {
+  const { signedMessage, signerAddress, error } = await signMessage(message, {
+    networkPassphrase: STELLAR_CONFIG.passphrase,
+    address,
+  });
+  if (error) throw new Error(error.message || 'Freighter could not sign the message.');
+  if (!signedMessage) throw new Error('Freighter returned an empty signature.');
+  if (signerAddress !== address) throw new Error('Freighter signed with a different account.');
+  return typeof signedMessage === 'string'
+    ? signedMessage
+    : Buffer.from(signedMessage).toString('base64');
+};
+
+/** Verifies a base64 SEP-53 signature of `message` by the Stellar account `address`. */
+export function verifySignedMessage(address: string, message: string, signature: string): boolean {
+  try {
+    return Keypair.fromPublicKey(address).verify(
+      sep53Digest(message),
+      Buffer.from(signature, 'base64'),
+    );
+  } catch {
+    return false;
+  }
+}
+
 const SOROBAN_TX_TIMEOUT_SECONDS = 300;
 const SOROBAN_POLL_ATTEMPTS = 30; // ~1 s apart, i.e. about 5 ledgers
 

@@ -21,10 +21,16 @@ import {
   ShieldCheck,
   Menu,
   X,
+  BookUser,
 } from 'lucide-react';
 import ContractUpgradeBanner from '@/components/layout/ContractUpgradeBanner';
+import DelegatedProxyBanner, {
+  ExitProxyModeButton,
+} from '@/components/navigation/DelegatedProxyBanner';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
+import { useProxyStore } from '@/store/proxyStore';
+import { clearBackupKeyCache } from '@/hooks/useAddressBook';
 import { clearSession } from '@/services/api.service';
 import { Avatar } from '@/components/ui/Avatar';
 
@@ -33,6 +39,7 @@ const patientNav = [
   { href: '/dashboard/patient/records', icon: FileText, label: 'Medical Records' },
   { href: '/dashboard/patient/access', icon: Shield, label: 'Access Control' },
   { href: '/dashboard/patient/appointments', icon: Calendar, label: 'Appointments' },
+  { href: '/dashboard/patient/contacts', icon: BookUser, label: 'Trusted Contacts' },
   { href: '/dashboard/patient/activity', icon: Clock, label: 'Activity Log' },
 ];
 
@@ -117,6 +124,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   function handleDisconnect() {
     disconnect();
     clearAuth();
+    useProxyStore.getState().exitProxyMode();
+    clearBackupKeyCache();
     clearSession();
     router.replace('/login');
   }
@@ -256,6 +265,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div className="flex items-center gap-2">
+            <ExitProxyModeButton />
             <button className="btn-icon rounded-[9px]" aria-label="Notifications">
               <Bell className="w-4 h-4" />
             </button>
@@ -270,6 +280,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </button>
           </div>
         </div>
+
+        {/* Delegated resident mode (#118) */}
+        <DelegatedProxyBanner showExit={false} />
 
         {/* Contract upgrade notice */}
         <ContractUpgradeBanner />

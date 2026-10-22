@@ -17,6 +17,7 @@ import {
   buildAccountMergeTransaction,
   buildRecordPointerTransaction,
   confirmAccountClosed,
+  findMissingRecordPointers,
   freighterSigner,
   lookupMergeAccount,
   planAccountMerge,
@@ -25,6 +26,7 @@ import {
   type AccountLookupResult,
   type AccountMergePlan,
   type MergeAccountSnapshot,
+  type MergeAssetStatus,
 } from '@/lib/stellar';
 import { useWalletStore } from '@/store/useWalletStore';
 
@@ -49,6 +51,15 @@ function shorten(key: string): string {
 function assetLabel(assetCode: string, assetIssuer: string | null): string {
   return assetIssuer ? `${assetCode}:${assetIssuer}` : assetCode;
 }
+
+const ASSET_STATUS_LABELS: Record<MergeAssetStatus, string> = {
+  ready: 'ready',
+  'zero-balance': 'nothing to send',
+  'missing-trustline': 'no trustline',
+  'unauthorized-trustline': 'not authorized',
+  'insufficient-limit': 'limit too low',
+  'liquidity-pool': 'pool shares',
+};
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
@@ -216,10 +227,29 @@ export default function AccountMergeWizard() {
       const fresh = await lookupMergeAccount(publicKey);
       const sourceAccount = fresh.status === 'found' ? fresh.account : source;
 
+      // The merge deletes the old account's data entries, so refuse to merge
+      // until every record pointer is confirmed on the new account.
+      if (plan.pointers.updates.length > 0) {
+        const freshDestination = await lookupMergeAccount(destination.publicKey);
+        if (freshDestination.status !== 'found') {
+          throw new Error('The new wallet could not be loaded to confirm the record pointers.');
+        }
+        const missing = findMissingRecordPointers(freshDestination.account, plan.pointers.updates);
+        if (missing.length > 0) {
+          throw new Error(
+            `${missing.length} record pointer(s) are not on the new wallet yet (${missing
+              .map((update) => update.key)
+              .join(', ')}). Reassign them before merging.`,
+          );
+        }
+      }
+
       const transaction = buildAccountMergeTransaction({
         sourcePublicKey: publicKey,
         sourceSequence: sourceAccount.sequence,
         destinationPublicKey: destination.publicKey,
+        trustlines: sourceAccount.trustlines,
+        dataEntries: sourceAccount.dataEntries,
       });
       const signedXdr = await freighterSigner(
         transaction.toXDR(),
@@ -434,13 +464,7 @@ export default function AccountMergeWizard() {
                           : 'badge-red shrink-0'
                     }
                   >
-                    {asset.status === 'ready'
-                      ? 'ready'
-                      : asset.status === 'zero-balance'
-                        ? 'nothing to send'
-                        : asset.status === 'missing-trustline'
-                          ? 'no trustline'
-                          : 'limit too low'}
+                    {ASSET_STATUS_LABELS[asset.status]}
                   </span>
                 </div>
               ))}
@@ -637,23 +661,32 @@ export default function AccountMergeWizard() {
         >
           <h2 className="text-sm font-semibold text-text-1">Final transaction breakdown</h2>
           <p className="text-xs text-text-3 mt-1 mb-4">
-            One <span className="font-mono">AccountMerge</span> operation closes the old account and
-            moves everything it holds.
+            One atomic transaction pays out every asset, removes the old account&apos;s trustlines
+            and data entries, then closes it with <span className="font-mono">AccountMerge</span>.
+            If any operation fails, nothing changes.
           </p>
+
+          <ol className="space-y-1 mb-4 text-2xs font-mono text-text-2" aria-label="Operations">
+            {plan.operations.map((operation, index) => (
+              <li key={`${operation.type}-${index}`} className="flex gap-2">
+                <span className="text-text-3">{index + 1}.</span>
+                <span className="text-text-1">{operation.type}</span>
+                <span className="truncate">{operation.description}</span>
+              </li>
+            ))}
+          </ol>
 
           <dl className="space-y-2 text-xs">
             <div className="flex items-center justify-between gap-4">
-              <dt className="text-text-2">Operation</dt>
-              <dd className="font-mono text-text-1">
-                AccountMerge → {shorten(destination.publicKey)}
-              </dd>
+              <dt className="text-text-2">Destination</dt>
+              <dd className="font-mono text-text-1">{shorten(destination.publicKey)}</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
               <dt className="text-text-2">XLM balance of the old account</dt>
               <dd className="font-mono text-text-1">{plan.source.nativeBalance} XLM</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt className="text-text-2">Network fee</dt>
+              <dt className="text-text-2">Network fee ({plan.operations.length} operations)</dt>
               <dd className="font-mono text-text-1">{plan.mergeFeeXlm} XLM</dd>
             </div>
             <div className="flex items-center justify-between gap-4">

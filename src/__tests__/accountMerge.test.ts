@@ -5,6 +5,8 @@ import {
   buildRecordPointerPlan,
   buildRecordPointerTransaction,
   compareAmounts,
+  describeMergeOperations,
+  findMissingRecordPointers,
   planAccountMerge,
   stroopsToXlm,
   subtractAmounts,
@@ -27,17 +29,29 @@ type ParsedOperation = {
   value?: Buffer | null;
 };
 
+/** Builds an account snapshot whose subentry count matches its trustlines and data entries. */
 function snapshot(overrides: Partial<MergeAccountSnapshot> = {}): MergeAccountSnapshot {
+  const trustlines = overrides.trustlines ?? [];
+  const dataEntries = overrides.dataEntries ?? [];
   return {
     publicKey: SOURCE_KEY,
     sequence: '100',
     nativeBalance: '10.0000000',
-    subentryCount: 2,
-    trustlines: [],
-    dataEntries: [],
+    subentryCount: trustlines.length + dataEntries.length,
     ...overrides,
+    trustlines,
+    dataEntries,
   };
 }
+
+const USDC_LINE = {
+  assetCode: 'USDC',
+  assetIssuer: ISSUER,
+  assetType: 'credit_alphanum4',
+  balance: '25.0000000',
+  limit: '1000.0000000',
+  sponsored: false,
+};
 
 describe('amount helpers', () => {
   it('converts XLM to stroops and back without losing precision', () => {
@@ -149,11 +163,81 @@ describe('planAccountMerge', () => {
 
     expect(plan.blockers).toHaveLength(0);
     expect(plan.assets[0]).toMatchObject({ status: 'ready', required: true });
-    expect(plan.xlmTransferredXlm).toBe('9.9999900');
+    // payment + changeTrust + accountMerge, 100 stroops each
+    expect(plan.operations.map((op) => op.type)).toEqual([
+      'payment',
+      'changeTrust',
+      'accountMerge',
+    ]);
+    expect(plan.mergeFeeXlm).toBe('0.0000300');
+    expect(plan.xlmTransferredXlm).toBe('9.9999700');
     expect(plan.reclaimableReserveXlm).toBe(
-      stroopsToXlm(BigInt(2 * BASE_RESERVE_XLM * 10_000_000)),
+      stroopsToXlm(BigInt(1 * BASE_RESERVE_XLM * 10_000_000)),
     );
-    expect(plan.destinationBalanceAfterXlm).toBe('14.9999900');
+    // The reclaimed reserve is already part of the native balance, so it is not added twice.
+    expect(plan.destinationBalanceAfterXlm).toBe('13.9999700');
+  });
+
+  it('blocks the merge when the issuer has not authorized the destination trustline', () => {
+    const plan = planAccountMerge(
+      snapshot({ trustlines: [USDC_LINE] }),
+      snapshot({
+        publicKey: DESTINATION_KEY,
+        trustlines: [{ ...USDC_LINE, balance: '0.0000000', authorized: false }],
+      }),
+      SOURCE_KEY,
+      DESTINATION_KEY,
+    );
+
+    expect(plan.assets[0]).toMatchObject({ status: 'unauthorized-trustline', required: true });
+    expect(plan.blockers).toEqual([expect.stringContaining('not authorized by the issuer')]);
+  });
+
+  it('blocks liquidity pool shares, extra signers, sponsorships and open offers', () => {
+    const plan = planAccountMerge(
+      snapshot({
+        trustlines: [
+          {
+            assetCode: 'pool-abc',
+            assetIssuer: null,
+            assetType: 'liquidity_pool_shares',
+            balance: '3.0000000',
+            limit: '922337203685.4775807',
+            sponsored: false,
+          },
+        ],
+        // 2 (pool share) + 1 extra signer + 2 open offers
+        subentryCount: 5,
+        extraSignerCount: 1,
+        numSponsoring: 1,
+      }),
+      snapshot({ publicKey: DESTINATION_KEY }),
+      SOURCE_KEY,
+      DESTINATION_KEY,
+    );
+
+    expect(plan.assets[0]).toMatchObject({ status: 'liquidity-pool', required: true });
+    expect(plan.blockers).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('liquidity pool shares'),
+        expect.stringContaining('additional signer'),
+        expect.stringContaining('sponsors 1 ledger entry'),
+        expect.stringContaining('Cancel the 2 open DEX offer(s)'),
+      ]),
+    );
+  });
+
+  it('blocks a merge that needs more operations than one transaction allows', () => {
+    const dataEntries = Array.from({ length: 100 }, (_, i) => ({ key: `k${i}`, value: 'v' }));
+    const plan = planAccountMerge(
+      snapshot({ dataEntries }),
+      snapshot({ publicKey: DESTINATION_KEY }),
+      SOURCE_KEY,
+      DESTINATION_KEY,
+    );
+
+    expect(plan.operations).toHaveLength(101);
+    expect(plan.blockers).toEqual([expect.stringContaining('more than the 100 allowed')]);
   });
 
   it('blocks the merge when the destination has no trustline for a held asset', () => {
@@ -241,6 +325,59 @@ describe('planAccountMerge', () => {
   });
 });
 
+describe('describeMergeOperations', () => {
+  it('pays out balances, removes trustlines and data entries, then merges', () => {
+    const operations = describeMergeOperations(
+      snapshot({
+        trustlines: [USDC_LINE, { ...USDC_LINE, assetCode: 'EURC', balance: '0.0000000' }],
+        dataEntries: [{ key: 'medical_record:HS-001', value: SOURCE_KEY }],
+      }),
+      DESTINATION_KEY,
+    );
+
+    expect(operations.map((op) => op.type)).toEqual([
+      'payment',
+      'changeTrust',
+      'changeTrust',
+      'manageData',
+      'accountMerge',
+    ]);
+    expect(operations[0]?.description).toContain('25.0000000 USDC');
+  });
+});
+
+describe('findMissingRecordPointers', () => {
+  const update = {
+    key: 'medical_record:HS-001',
+    previousKey: 'medical_record:HS-001',
+    value: DESTINATION_KEY,
+    previousValue: SOURCE_KEY,
+    referencesSource: true,
+  };
+
+  it('reports pointers the destination does not store yet', () => {
+    expect(findMissingRecordPointers(snapshot({ publicKey: DESTINATION_KEY }), [update])).toEqual([
+      update,
+    ]);
+  });
+
+  it('reports pointers stored with a stale value', () => {
+    const destination = snapshot({
+      publicKey: DESTINATION_KEY,
+      dataEntries: [{ key: update.key, value: SOURCE_KEY }],
+    });
+    expect(findMissingRecordPointers(destination, [update])).toHaveLength(1);
+  });
+
+  it('accepts pointers that are already reassigned', () => {
+    const destination = snapshot({
+      publicKey: DESTINATION_KEY,
+      dataEntries: [{ key: update.key, value: DESTINATION_KEY }],
+    });
+    expect(findMissingRecordPointers(destination, [update])).toHaveLength(0);
+  });
+});
+
 describe('transaction builders', () => {
   it('builds a single AccountMerge operation towards the destination', () => {
     const transaction = buildAccountMergeTransaction({
@@ -257,6 +394,32 @@ describe('transaction builders', () => {
     const op = parsed.operations[0] as ParsedOperation | undefined;
     expect(op?.type).toBe('accountMerge');
     expect(op?.destination).toBe(DESTINATION_KEY);
+  });
+
+  it('empties trustlines and data entries before merging, in one transaction', () => {
+    const transaction = buildAccountMergeTransaction({
+      sourcePublicKey: SOURCE_KEY,
+      sourceSequence: '100',
+      destinationPublicKey: DESTINATION_KEY,
+      trustlines: [USDC_LINE],
+      dataEntries: [{ key: 'medical_record:HS-001', value: SOURCE_KEY }],
+    });
+
+    const parsed = TransactionBuilder.fromXDR(transaction.toXDR(), PASSPHRASE);
+    const ops = parsed.operations as unknown as Array<
+      ParsedOperation & { amount?: string; limit?: string }
+    >;
+    expect(ops.map((op) => op.type)).toEqual([
+      'payment',
+      'changeTrust',
+      'manageData',
+      'accountMerge',
+    ]);
+    expect(ops[0]).toMatchObject({ destination: DESTINATION_KEY, amount: '25.0000000' });
+    expect(ops[1]?.limit).toBe('0.0000000');
+    expect(ops[2]).toMatchObject({ name: 'medical_record:HS-001' });
+    expect(ops[2]?.value).toBeUndefined();
+    expect(parsed.fee).toBe(String(4 * 100));
   });
 
   it('builds one ManageData operation per reassigned record pointer', () => {

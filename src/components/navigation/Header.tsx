@@ -2,7 +2,11 @@
 
 import Link from 'next/link';
 import { useAuthStore } from '@/store/authStore';
+import { useProxyStore } from '@/store/proxyStore';
 import { ROLE_DASHBOARD_MAP } from '@/hooks/useRoleRedirect';
+import DelegatedProxyBanner, {
+  ExitProxyModeButton,
+} from '@/components/navigation/DelegatedProxyBanner';
 
 /**
  * Global header with navigation links conditionally rendered by role.
@@ -81,10 +85,16 @@ export function Header() {
             </Link>
           )}
 
+          {/* Leave delegated resident mode (#118) */}
+          <ExitProxyModeButton />
+
           {/* Auth actions */}
           {walletAddress ? (
             <button
-              onClick={clearAuth}
+              onClick={() => {
+                useProxyStore.getState().exitProxyMode();
+                clearAuth();
+              }}
               className="text-text-3 hover:text-red-600"
               title={walletAddress}
             >
@@ -100,6 +110,7 @@ export function Header() {
           )}
         </div>
       </nav>
+      <DelegatedProxyBanner showExit={false} />
     </header>
   );
 }
