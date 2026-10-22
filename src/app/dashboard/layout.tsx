@@ -26,6 +26,7 @@ import NotificationBell from '@/components/navigation/NotificationBell';
 import ContractUpgradeBanner from '@/components/layout/ContractUpgradeBanner';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
+import { clearSession } from '@/services/api.service';
 import { Avatar } from '@/components/ui/Avatar';
 
 const patientNav = [
@@ -117,6 +118,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   function handleDisconnect() {
     disconnect();
     clearAuth();
+    clearSession();
     router.replace('/login');
   }
 

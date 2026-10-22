@@ -24,6 +24,7 @@ jest.mock('axios', () => {
       create: jest.fn(() => ({
         ...mockApi,
         interceptors: {
+          request: { use: jest.fn() },
           response: {
             use: jest.fn((_fulfilled, rejected) => {
               mockInterceptorRejected = rejected;

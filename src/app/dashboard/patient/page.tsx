@@ -37,6 +37,7 @@ import type { MedicalRecord } from '@/types';
 import { EmptyRecordState } from '@/components/records/EmptyRecordState';
 import RecoveryBackupWizard from '@/components/recovery/RecoveryBackupWizard';
 import ClinicalTrialEnrollment from '@/components/trials/ClinicalTrialEnrollment';
+import AccessAuditTimeline from '@/components/records/AccessAuditTimeline';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
