@@ -325,3 +325,56 @@ export function rowsToMedicalRecords(rows: BulkRecordImportRow[], patientAddress
   }));
 }
 
+
+export type UnitSystem = 'SI' | 'conventional';
+
+export interface UnitConversion {
+  from: string;
+  to: string;
+  factor: number;
+  offset?: number;
+}
+
+export const UNIT_CONVERSION_TABLE: Record<string, UnitConversion[]> = {
+  'blood glucose': [
+    { from: 'mg/dL', to: 'mmol/L', factor: 0.0555, offset: 0 },
+    { from: 'mmol/L', to: 'mg/dL', factor: 18.018, offset: 0 },
+  ],
+  'creatinine': [
+    { from: 'mg/dL', to: 'umol/L', factor: 88.4, offset: 0 },
+    { from: 'umol/L', to: 'mg/dL', factor: 0.0113, offset: 0 },
+  ],
+  'cholesterol': [
+    { from: 'mg/dL', to: 'mmol/L', factor: 0.02586, offset: 0 },
+    { from: 'mmol/L', to: 'mg/dL', factor: 38.67, offset: 0 },
+  ],
+  'bilirubin': [
+    { from: 'mg/dL', to: 'umol/L', factor: 17.1, offset: 0 },
+    { from: 'umol/L', to: 'mg/dL', factor: 0.0585, offset: 0 },
+  ],
+  'hemoglobin': [
+    { from: 'g/dL', to: 'g/L', factor: 10, offset: 0 },
+    { from: 'g/L', to: 'g/dL', factor: 0.1, offset: 0 },
+  ],
+};
+
+export function normalizeLabValueToSI(test: string, value: number, unit: string): { value: number; unit: string } {
+  const key = test.toLowerCase().trim();
+  const conversions = UNIT_CONVERSION_TABLE[key];
+  if (!conversions) return { value, unit };
+  const siConv = conversions.find((c) => c.from.toLowerCase() === unit.toLowerCase());
+  if (!siConv) return { value, unit };
+  return { value: value * siConv.factor + (siConv.offset ?? 0), unit: siConv.to };
+}
+
+export function convertValue(value: number, from: string, to: string, test: string): number {
+  const key = test.toLowerCase().trim();
+  const conversions = UNIT_CONVERSION_TABLE[key] ?? [];
+  const conv = conversions.find((c) => c.from.toLowerCase() === from.toLowerCase() && c.to.toLowerCase() === to.toLowerCase());
+  if (!conv) return value;
+  return value * conv.factor + (conv.offset ?? 0);
+}
+
+export function convertReferenceRange(range: { low: number; high: number }, from: string, to: string, test: string): { low: number; high: number } {
+  return { low: convertValue(range.low, from, to, test), high: convertValue(range.high, from, to, test) };
+}
