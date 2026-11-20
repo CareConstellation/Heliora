@@ -5,10 +5,16 @@ import { useNotifications } from '@/hooks/useNotifications';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useToast } from '@/hooks/useToast';
 import { type NotificationEvent } from '@/hooks/useNotifications';
+import { onAppEvent } from '@/lib/appEvents';
+import { useEffect } from 'react';
 
 export default function NotificationBell() {
   const { publicKey } = useWalletStore();
   const { toast } = useToast();
+
+  useEffect(() => onAppEvent('appointment:booked', ({ doctorName }) => {
+    toast(`Appointment with ${doctorName} confirmed`, 'success');
+  }), [toast]);
 
   const handleNotification = (event: NotificationEvent) => {
     const typeToKind = {
