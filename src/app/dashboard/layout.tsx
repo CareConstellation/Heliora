@@ -14,7 +14,6 @@ import {
   LogOut,
   Stethoscope,
   Users,
-  Bell,
   ChevronDown,
   Hospital,
   ClipboardList,
@@ -33,6 +32,8 @@ import { useProxyStore } from '@/store/proxyStore';
 import { clearBackupKeyCache } from '@/hooks/useAddressBook';
 import { clearSession } from '@/services/api.service';
 import { Avatar } from '@/components/ui/Avatar';
+import NotificationBell from '@/components/navigation/NotificationBell';
+import StorageQuotaMonitor from '@/components/ui/StorageQuotaMonitor';
 
 const patientNav = [
   { href: '/dashboard/patient', icon: LayoutDashboard, label: 'Overview' },
@@ -266,9 +267,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
           <div className="flex items-center gap-2">
             <ExitProxyModeButton />
-            <button className="btn-icon rounded-[9px]" aria-label="Notifications">
-              <Bell className="w-4 h-4" />
-            </button>
+            <NotificationBell />
             <Avatar initials={initials} alt={portalLabel(pathname)} size={28} />
             {/* Mobile drawer toggle */}
             <button
@@ -288,7 +287,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <ContractUpgradeBanner />
 
         {/* Page */}
-        <main className="flex-1 p-6 lg:p-8">{children}</main>
+        <main className="flex-1 p-6 lg:p-8"><StorageQuotaMonitor />{children}</main>
       </div>
 
       {/* ── Mobile navigation drawer ────────────────────────────────── */}

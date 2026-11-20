@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchRecordsPaginated } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
+import InsuranceClaims from '@/components/patient/InsuranceClaims';
 import {
   FileText,
   Shield,
@@ -298,6 +299,8 @@ export default function PatientDashboard() {
           </button>
         </div>
       </div>
+
+      <InsuranceClaims />
 
       {/* ── KPI cards ────────────────────────────────────────────── */}
       {recordsLoading ? (

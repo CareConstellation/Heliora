@@ -26,8 +26,10 @@ import {
   ArrowUpRight,
 } from 'lucide-react';
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
+import ProtocolConsole from '@/components/admin/ProtocolConsole';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
+import TelemetryPanel from '@/components/admin/TelemetryPanel';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 type Role = 'PATIENT' | 'DOCTOR' | 'HOSPITAL' | 'ADMIN';
@@ -413,6 +415,8 @@ function AdminDashboardContent() {
         </button>
       </div>
 
+      <ProtocolConsole />
+
       {/* ── KPI cards ────────────────────────────────────────────── */}
       {loading ? (
         <KpiSkeleton count={4} />
@@ -462,6 +466,8 @@ function AdminDashboardContent() {
           />
         </div>
       )}
+
+      <TelemetryPanel />
 
       {/* ── Main grid ────────────────────────────────────────────── */}
       {error ? (
