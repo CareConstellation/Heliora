@@ -30,7 +30,6 @@ import type {
   EligibilityProofToken,
   EncryptedIntakePayload,
 } from '@/types';
-import { TransactionBuilder, Networks, Operation, Asset } from '@stellar/stellar-sdk';
 
 type Step = 'search' | 'slots' | 'intake' | 'form' | 'confirmed';
 
@@ -96,7 +95,8 @@ function BookingFlow() {
       const fee = computeFeeInvoice(listFee, freshSubsidy).patientPays;
 
       if (form.paymentMethod === 'stellar' && window.freighter && fee > 0) {
-        const server = new (await import('@stellar/stellar-sdk')).Horizon.Server(
+        const { Asset, Horizon, Networks, Operation, TransactionBuilder } = await import('@stellar/stellar-sdk');
+        const server = new Horizon.Server(
           STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
         const account = await server.loadAccount(publicKey);
@@ -128,11 +128,11 @@ function BookingFlow() {
           networkPassphrase:
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
         });
-        const server2 = new (await import('@stellar/stellar-sdk')).Horizon.Server(
+        const server2 = new Horizon.Server(
           STELLAR_CONFIG.horizonUrl ?? 'https://horizon-testnet.stellar.org',
         );
         await server2.submitTransaction(
-          (await import('@stellar/stellar-sdk')).TransactionBuilder.fromXDR(
+          TransactionBuilder.fromXDR(
             signed,
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
           ),

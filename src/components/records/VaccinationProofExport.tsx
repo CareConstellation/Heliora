@@ -52,7 +52,7 @@ export default function VaccinationProofExport({
   const qrData = token ? encodeProofPayload(token) : null;
 
   return (
-    <section aria-labelled="Vaccination proof export" className="space-y-4">
+    <section aria-label="Vaccination proof export" className="space-y-4">
       <header className="space-y-1">
         <h2>Export vaccination proof</h2>
         <p className="text-sm text-muted-foreground">

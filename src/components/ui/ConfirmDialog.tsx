@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
+
 interface Props {
   title: string;
   message: string;
@@ -19,12 +21,16 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { dialogRef.current?.focus(); }, []);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
+      tabIndex={-1}
+      ref={dialogRef}
       onKeyDown={(e) => {
         if (e.key === 'Escape') onCancel();
       }}
