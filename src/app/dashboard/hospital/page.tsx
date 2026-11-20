@@ -40,6 +40,7 @@ import {
   bulkUpdateStaff,
 } from '@/services/api.service';
 import type { HospitalMetrics, StaffMember, PatientAdmission, ComplianceReport } from '@/types';
+import DepartmentPermissions from '@/components/hospital/DepartmentPermissions';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -152,7 +153,7 @@ function HospitalDashboardContent() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<
-    'staff' | 'admissions' | 'compliance' | 'disputes' | 'audit' | 'multisig'
+    'staff' | 'admissions' | 'compliance' | 'permissions' | 'disputes' | 'audit' | 'multisig'
   >('staff');
 
   // A shared multisig deep link (?xdr=) opens straight on the signing tab.
@@ -396,6 +397,7 @@ function HospitalDashboardContent() {
             { key: 'staff', label: 'Staff Management' },
             { key: 'admissions', label: 'Admissions' },
             { key: 'compliance', label: 'Compliance' },
+            { key: 'permissions', label: 'Permissions' },
             { key: 'disputes', label: 'Disputes' },
             { key: 'audit', label: 'Audit Trail' },
             { key: 'multisig', label: 'Multisig' },
@@ -885,6 +887,11 @@ function HospitalDashboardContent() {
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════════════════════════
+          Department permissions tab
+          ══════════════════════════════════════════════════════════ */}
+      {activeTab === 'permissions' && <DepartmentPermissions staff={staff} />}
 
       {/* ══════════════════════════════════════════════════════════
           Disputes tab — missed telemedicine consultations
