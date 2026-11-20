@@ -40,6 +40,7 @@ import {
   bulkUpdateStaff,
 } from '@/services/api.service';
 import type { HospitalMetrics, StaffMember, PatientAdmission, ComplianceReport } from '@/types';
+import PublicHealthExport from '@/components/hospital/PublicHealthExport';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -307,6 +308,7 @@ function HospitalDashboardContent() {
               {publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : '···'}
             </span>
           </div>
+          <PublicHealthExport rows={admissions as unknown as Record<string, unknown>[]} firstAdmin={publicKey} />
         </div>
         <div className="flex items-center gap-2.5">
           <button
