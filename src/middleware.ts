@@ -5,10 +5,7 @@ export function middleware(request: NextRequest) {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   const nonce = btoa(String.fromCharCode(...bytes));
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set('x-nonce', nonce);
-  const response = NextResponse.next({ request: { headers: requestHeaders } });
-  response.headers.set('Content-Security-Policy', [
+  const csp = [
     `default-src 'self'`,
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
     `style-src 'self' 'unsafe-inline'`,
@@ -19,7 +16,14 @@ export function middleware(request: NextRequest) {
     `frame-ancestors 'none'`,
     `object-src 'none'`,
     `base-uri 'self'`,
-  ].join('; '));
+  ].join('; ');
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-nonce', nonce);
+  // Next.js reads the nonce for its own scripts from the request CSP header.
+  requestHeaders.set('Content-Security-Policy', csp);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  // shortcut: report-only until connect-src lists every runtime origin (API, Soroban RPC, Sentry); then enforce.
+  response.headers.set('Content-Security-Policy-Report-Only', csp);
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.headers.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
