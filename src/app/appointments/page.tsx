@@ -14,6 +14,7 @@ import EligibilityProofs from '@/components/appointments/EligibilityProofs';
 import IntakeQuestionnaire from '@/components/appointments/IntakeQuestionnaire';
 import { CancellationPolicyMatrix } from '@/components/appointments/CancellationPolicy';
 import { createAppointment, fetchSubsidyTier } from '@/services/api.service';
+import { emitAppEvent } from '@/lib/appEvents';
 import FeeInvoice from '@/components/appointments/FeeInvoice';
 import { computeFeeInvoice } from '@/lib/feeSubsidy';
 import { useWalletStore } from '@/store/useWalletStore';
@@ -156,6 +157,7 @@ function BookingFlow() {
       });
     },
     onSuccess: (appt) => {
+      emitAppEvent('appointment:booked', { appointmentId: appt.id, doctorName: appt.doctorName, datetime: appt.datetime });
       setQuote(null);
       setConfirmed(withVideoRoom(appt));
       setStep('confirmed');
