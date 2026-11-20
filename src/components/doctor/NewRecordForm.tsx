@@ -10,6 +10,7 @@ import { STELLAR_CONFIG } from '@/lib/stellar';
 import { TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import type { DiagnosisCode, MedicationCheckResult } from '@/types';
 import { AlertTriangle, AlertOctagon, ShieldAlert, Info } from 'lucide-react';
+import PrescriptionPresets, { type PrescriptionPreset } from './PrescriptionPresets';
 import {
   enqueueClinicalRecord,
   listClinicalOutbox,
@@ -193,6 +194,10 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
   const canSubmit =
     !requiresOverride ||
     (form.overrideRationale.trim().length >= 10 && form.acknowledgeRisk);
+
+  function applyPreset(preset: PrescriptionPreset) {
+    setForm((current) => ({ ...current, prescription: `${preset.prescription} — ${preset.instructions}` }));
+  }
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -409,9 +414,15 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
           <label className="block text-xs font-medium text-text-2">Prescription</label>
           {isChecking && <span className="text-2xs text-text-3">Cross-checking interactions…</span>}
         </div>
+        <PrescriptionPresets onApply={applyPreset} />
         <input
           value={form.prescription}
-          onChange={(e) => setForm((f) => ({ ...f, prescription: e.target.value }))}
+          onChange={(e) => {
+            const value = e.target.value;
+            const macro = value.match(/(?:^|\s)\.([a-z0-9_-]+)$/i)?.[1]?.toLowerCase();
+            const expansion: Record<string, string> = { htn: 'Amlodipine 5mg — Once daily' };
+            setForm((f) => ({ ...f, prescription: macro && expansion[macro] ? value.slice(0, -(macro.length + 1)) + expansion[macro] : value }));
+          }}
           placeholder="e.g. Amoxicillin 500mg TID, Warfarin 5mg, Ibuprofen 600mg"
           className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
         />
