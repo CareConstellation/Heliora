@@ -40,6 +40,7 @@ import {
   bulkUpdateStaff,
 } from '@/services/api.service';
 import type { HospitalMetrics, StaffMember, PatientAdmission, ComplianceReport } from '@/types';
+import StaffOnboarding from '@/components/hospital/StaffOnboarding';
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {
@@ -323,6 +324,8 @@ function HospitalDashboardContent() {
           </button>
         </div>
       </div>
+
+      <StaffOnboarding />
 
       {/* ── Analytics cards ──────────────────────────────────── */}
       {loadingMetrics ? (
