@@ -1,10 +1,17 @@
 import './globals.css';
+import { headers } from 'next/headers';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { Providers } from '@/context/Providers';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const headerList = await headers();
+  const nonce = headerList.get('x-nonce') || undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {nonce && <meta name="csp-nonce" content={nonce} />}
+      </head>
       <body>
         <ThemeProvider
           attribute="class"
