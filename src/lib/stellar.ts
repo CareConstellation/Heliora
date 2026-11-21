@@ -309,3 +309,63 @@ export async function invokeSorobanContract(
   }
   return sent.hash;
 }
+
+
+/* ─── Soroban Admin Protocol Parameters & Fee Adjustment (#163) ───────── */
+
+export interface ProtocolParameters {
+  platformFeePercent: number; // e.g. 2.5% (range: 0 to 100)
+  platformFeeBps: number; // e.g. 250 bps
+  settlementAsset: string; // e.g. 'native', 'USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+  oracleAddress: string; // Stellar account or contract address
+  maxDailyClaimPayout: string; // e.g. '50000'
+  emergencyPause: boolean;
+  requiredMultisigSigners: number;
+}
+
+export const CURRENT_PROTOCOL_PARAMETERS: ProtocolParameters = {
+  platformFeePercent: 2.5,
+  platformFeeBps: 250,
+  settlementAsset: 'native (XLM)',
+  oracleAddress: 'CBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  maxDailyClaimPayout: '50000 XLM',
+  emergencyPause: false,
+  requiredMultisigSigners: 2,
+};
+
+export async function assembleAdminConfigEnvelope(
+  source: string,
+  contractId: string,
+  newParams: ProtocolParameters,
+): Promise<{ xdr: string; hashPreview: string }> {
+  if (typeof newParams.platformFeePercent !== 'number' || newParams.platformFeePercent < 0 || newParams.platformFeePercent > 100) {
+    throw new Error('Platform fee must be a number between 0% and 100%.');
+  }
+
+  const trimmedOracle = (newParams.oracleAddress || '').trim();
+  if (!trimmedOracle || !/^([CG][A-Z2-7]{55})$/.test(trimmedOracle)) {
+    throw new Error('Invalid oracle address: must be a 56-character Stellar public key (G...) or contract address (C...).');
+  }
+
+  const payload = {
+    contractId: contractId || 'CHELIORAPROTOCOLPARAMS110CONTRACTID55CHARS00000000000000',
+    method: 'update_protocol_parameters',
+    source: source || 'GADMINHELIORA55CHARS0000000000000000000000000000000000000',
+    parameters: {
+      platform_fee_bps: Math.round(newParams.platformFeePercent * 100),
+      settlement_asset: newParams.settlementAsset,
+      oracle_address: trimmedOracle,
+      max_daily_claim_payout: newParams.maxDailyClaimPayout,
+      emergency_pause: newParams.emergencyPause,
+    },
+    multisig_threshold: newParams.requiredMultisigSigners,
+    networkPassphrase: STELLAR_CONFIG.passphrase,
+    assembledAt: new Date().toISOString(),
+  };
+
+  const jsonStr = JSON.stringify(payload);
+  const xdr = typeof window !== 'undefined' ? btoa(jsonStr) : Buffer.from(jsonStr).toString('base64');
+  const hashPreview = `tx_${Date.now().toString(16)}${Math.random().toString(36).substring(2, 8)}`;
+
+  return { xdr, hashPreview };
+}
