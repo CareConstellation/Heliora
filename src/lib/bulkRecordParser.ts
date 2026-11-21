@@ -378,3 +378,15 @@ export function convertValue(value: number, from: string, to: string, test: stri
 export function convertReferenceRange(range: { low: number; high: number }, from: string, to: string, test: string): { low: number; high: number } {
   return { low: convertValue(range.low, from, to, test), high: convertValue(range.high, from, to, test) };
 }
+
+
+/* ─── Public Health Epidemiology & CDC / WHO Export (#165) ───────────── */
+export {
+  HIPAA_SAFE_HARBOR_IDENTIFIERS,
+  deidentifyRecord,
+  deidentifyRecords,
+  transformToCDCSyndromicSchema,
+  cdcRecordsToCsv,
+  downloadPublicHealthExport,
+  type CDCEventRecord,
+} from './publicHealthExport';
