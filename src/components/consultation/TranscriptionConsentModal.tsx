@@ -30,6 +30,7 @@ export default function TranscriptionConsentModal({
   const hasCurrentUserConsented = currentPartyIsDoctor
     ? consentState.doctorConsented
     : consentState.patientConsented;
+  const modalRef = useFocusTrap<HTMLDivElement>(true, onCancel);
 
   return (
     <div
@@ -38,7 +39,7 @@ export default function TranscriptionConsentModal({
       aria-labelledby="transcription-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
     >
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-surface-card p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
+      <div ref={modalRef} tabIndex={-1} className="w-full max-w-lg rounded-2xl border border-border bg-surface-card p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-200 focus:outline-none">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">

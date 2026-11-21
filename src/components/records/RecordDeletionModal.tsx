@@ -11,6 +11,7 @@ import {
 } from '@/lib/crypto';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useToast } from '@/hooks/useToast';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 import {
   Fingerprint,
   KeyRound,
@@ -48,6 +49,7 @@ export default function RecordDeletionModal({
   // Fallback states
   const [totpCode, setTotpCode] = useState('');
   const [totpSecret, setTotpSecret] = useState('HELIORA_CLINICAL_TOTP_KEY_2026');
+  const modalRef = useFocusTrap<HTMLDivElement>(isOpen, onClose);
 
   useEffect(() => {
     if (isOpen) {
@@ -163,15 +165,20 @@ export default function RecordDeletionModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
-      <div className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 shadow-2xl space-y-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="record-deletion-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+    >
+      <div ref={modalRef} tabIndex={-1} className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 shadow-2xl space-y-4 focus:outline-none">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
             <div className="rounded-lg bg-red-100 p-2 text-red-600">
               <ShieldAlert className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">Irreversible Action Authentication</h2>
+              <h2 id="record-deletion-title" className="text-base font-bold text-slate-900">Irreversible Action Authentication</h2>
               <p className="text-xs text-red-600 font-medium">Permanent Record Deletion / Archival</p>
             </div>
           </div>
