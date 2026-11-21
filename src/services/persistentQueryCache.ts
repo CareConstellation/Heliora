@@ -255,8 +255,32 @@ export function createPersistedQueryClient(): QueryClient {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 5 * 60 * 1000,
+        // Issue #135: granular stale-time per resource category.
+        // The query meta field `category` is read by the custom staleTime
+        // function below; every query that does not set it falls back to 5 m.
+        //
+        // Category           staleTime   rationale
+        // ─────────────────  ──────────  ──────────────────────────────────
+        // staff              30 m        near-static hospital directory
+        // records            5 m         immutable after creation
+        // appointments       30 s        slots fill and cancel in real-time
+        // payments / subsidy 2 m         settlement may lag a few seconds
+        // (default)          5 m         safe conservative fallback
+        staleTime: (query) => {
+          const category = (query.meta as Record<string, unknown> | undefined)?.category;
+          switch (category) {
+            case 'staff':       return 30 * 60 * 1000;   // 30 m
+            case 'records':     return  5 * 60 * 1000;   //  5 m
+            case 'appointments':return       30 * 1000;  // 30 s
+            case 'payments':
+            case 'subsidy':     return  2 * 60 * 1000;   //  2 m
+            default:            return  5 * 60 * 1000;   //  5 m
+          }
+        },
         gcTime: GARBAGE_COLLECTION_INTERVAL,
+        // Issue #135: disable window-focus refetch globally; individual
+        // time-sensitive queries (e.g. appointments) opt back in via
+        // refetchOnWindowFocus: true in their useQuery call.
         refetchOnWindowFocus: false,
       },
     },
