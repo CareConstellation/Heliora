@@ -25,11 +25,13 @@ import {
   Eye,
   ArrowUpRight,
 } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
-import ProtocolConsole from '@/components/admin/ProtocolConsole';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
 import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
-import TelemetryPanel from '@/components/admin/TelemetryPanel';
+
+const ProtocolConsole = dynamic(() => import('@/components/admin/ProtocolConsole'), { ssr: false });
+const TelemetryPanel = dynamic(() => import('@/components/admin/TelemetryPanel'), { ssr: false });
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 type Role = 'PATIENT' | 'DOCTOR' | 'HOSPITAL' | 'ADMIN';

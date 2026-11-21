@@ -7,7 +7,9 @@ import Link from 'next/link';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchRecordsPaginated } from '@/services/api.service';
 import { useWalletStore } from '@/store/useWalletStore';
-import InsuranceClaims from '@/components/patient/InsuranceClaims';
+import dynamic from 'next/dynamic';
+
+const InsuranceClaims = dynamic(() => import('@/components/patient/InsuranceClaims'), { ssr: false });
 import {
   FileText,
   Shield,
