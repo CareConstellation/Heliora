@@ -40,9 +40,11 @@ import {
   bulkUpdateStaff,
 } from '@/services/api.service';
 import type { HospitalMetrics, StaffMember, PatientAdmission, ComplianceReport } from '@/types';
-import PublicHealthExport from '@/components/hospital/PublicHealthExport';
-import StaffOnboarding from '@/components/hospital/StaffOnboarding';
-import DepartmentPermissions from '@/components/hospital/DepartmentPermissions';
+import dynamic from 'next/dynamic';
+
+const PublicHealthExport = dynamic(() => import('@/components/hospital/PublicHealthExport'), { ssr: false });
+const StaffOnboarding = dynamic(() => import('@/components/hospital/StaffOnboarding'), { ssr: false });
+const DepartmentPermissions = dynamic(() => import('@/components/hospital/DepartmentPermissions'), { ssr: false });
 
 /* ─── Sparkline ─────────────────────────────────────────────────── */
 function Sparkline({ values, color }: { values: number[]; color: string }) {

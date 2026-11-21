@@ -10,6 +10,7 @@ import {
 import { downloadConsentReceiptPDF } from '@/lib/medicalPdfGenerator';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useToast } from '@/hooks/useToast';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { ShieldCheck, Download, CheckCircle2, Building2, FlaskConical, Stethoscope, X } from 'lucide-react';
 
 interface Props {
@@ -82,15 +83,20 @@ export default function ConsentReceiptModal({ record, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="consent-receipt-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs"
+    >
+      <div ref={modalRef} tabIndex={-1} className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto focus:outline-none">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
             <div className="rounded-lg bg-green/10 p-2 text-green">
               <ShieldCheck className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">Verifiable Consent Receipt</h2>
+              <h2 id="consent-receipt-title" className="text-base font-bold text-slate-900">Verifiable Consent Receipt</h2>
               <p className="text-xs text-slate-500">Anchor cryptographic transmission token on Soroban</p>
             </div>
           </div>
