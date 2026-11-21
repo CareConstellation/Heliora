@@ -380,13 +380,144 @@ export function convertReferenceRange(range: { low: number; high: number }, from
 }
 
 
-/* ─── Public Health Epidemiology & CDC / WHO Export (#165) ───────────── */
-export {
-  HIPAA_SAFE_HARBOR_IDENTIFIERS,
-  deidentifyRecord,
-  deidentifyRecords,
-  transformToCDCSyndromicSchema,
-  cdcRecordsToCsv,
-  downloadPublicHealthExport,
-  type CDCEventRecord,
-} from './publicHealthExport';
+/* ─── Batch Staff Onboarding & Provisioning (#161) ─────────────────────── */
+
+export interface StaffOnboardingRow {
+  name: string;
+  email: string;
+  role: 'DOCTOR' | 'NURSE' | 'PHARMACIST' | 'LAB_TECH' | 'ADMIN';
+  licenseId: string;
+  department?: string;
+}
+
+export interface PreviewStaffRow extends StaffOnboardingRow {
+  _row: number;
+  _valid: boolean;
+  _errors: string[];
+}
+
+export interface StaffInvitationStatus {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  licenseId: string;
+  activationToken: string;
+  walletLink: string;
+  sentAt: string;
+  status: 'PENDING' | 'SENT' | 'ACCEPTED' | 'FAILED';
+  deliveryProgress: number;
+}
+
+export function parseStaffCSV(text: string): StaffOnboardingRow[] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') i++;
+      currentRow.push(currentCell.trim());
+      if (currentRow.some((c) => c.length > 0)) rows.push(currentRow);
+      currentRow = [];
+      currentCell = '';
+    } else {
+      currentCell += char;
+    }
+  }
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some((c) => c.length > 0)) rows.push(currentRow);
+  }
+
+  if (rows.length < 2) {
+    throw new Error('Staff CSV must contain a header row and at least one staff row.');
+  }
+
+  const headers = rows[0]!.map((h) => h.toLowerCase().replace(/[\s_-]+/g, ''));
+  const nameIdx = headers.findIndex((h) => h === 'name' || h === 'fullname' || h === 'staffname');
+  const emailIdx = headers.findIndex((h) => h === 'email' || h === 'emailaddress');
+  const roleIdx = headers.findIndex((h) => h === 'role' || h === 'position' || h === 'title');
+  const licenseIdx = headers.findIndex((h) => h === 'licenseid' || h === 'license' || h === 'licensenumber');
+  const deptIdx = headers.findIndex((h) => h === 'department' || h === 'dept');
+
+  if (nameIdx === -1 || emailIdx === -1) {
+    throw new Error('Staff CSV must contain at least "name" and "email" columns.');
+  }
+
+  const staffRows: StaffOnboardingRow[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const cols = rows[i];
+    if (!cols || !cols.some((c) => c.length > 0)) continue;
+    const rawRole = (roleIdx >= 0 && cols[roleIdx] ? cols[roleIdx]!.toUpperCase() : 'DOCTOR');
+    const validRole = ['DOCTOR', 'NURSE', 'PHARMACIST', 'LAB_TECH', 'ADMIN'].includes(rawRole)
+      ? (rawRole as StaffOnboardingRow['role'])
+      : 'DOCTOR';
+
+    staffRows.push({
+      name: cols[nameIdx] || '',
+      email: cols[emailIdx] || '',
+      role: validRole,
+      licenseId: licenseIdx >= 0 ? cols[licenseIdx] || '' : '',
+      department: deptIdx >= 0 ? cols[deptIdx] || '' : undefined,
+    });
+  }
+  return staffRows;
+}
+
+export function validateStaffRow(row: StaffOnboardingRow, idx: number): PreviewStaffRow {
+  const errors: string[] = [];
+  if (!row.name || !row.name.trim()) {
+    errors.push('Name is required');
+  } else if (row.name.trim().length < 2) {
+    errors.push('Name must be at least 2 characters');
+  }
+
+  if (!row.email || !row.email.trim()) {
+    errors.push('Email is required');
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email.trim())) {
+    errors.push('Invalid email format');
+  }
+
+  if (!row.licenseId || !row.licenseId.trim()) {
+    errors.push('Medical License ID is required');
+  }
+
+  for (const [field, value] of Object.entries(row)) {
+    if (typeof value === 'string' && FORMULA_PREFIX.test(value)) {
+      errors.push(`Formula injection detected in ${field}`);
+    }
+  }
+
+  return { ...row, _row: idx + 1, _valid: errors.length === 0, _errors: errors };
+}
+
+export function generateStaffInvitation(staff: StaffOnboardingRow, baseUrl = 'https://app.heliora.io'): StaffInvitationStatus {
+  const token = `hlr_act_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+  return {
+    id: `inv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    name: staff.name,
+    email: staff.email,
+    role: staff.role,
+    licenseId: staff.licenseId,
+    activationToken: token,
+    walletLink: `${baseUrl}/wallet/activate?token=${token}&email=${encodeURIComponent(staff.email)}&role=${staff.role}`,
+    sentAt: new Date().toISOString(),
+    status: 'SENT',
+    deliveryProgress: 100,
+  };
+}

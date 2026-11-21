@@ -195,8 +195,41 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
     !requiresOverride ||
     (form.overrideRationale.trim().length >= 10 && form.acknowledgeRisk);
 
+  const CLINICAL_MACROS: Record<string, { prescription?: string; notes?: string }> = {
+    htn: {
+      prescription: 'Amlodipine 5mg — Once daily (PO) (Take in morning with water)',
+      notes: 'Standard Hypertension Protocol: BP monitored seated after 5m rest. Target < 130/80 mmHg. Lifestyle modifications discussed (DASH diet, sodium < 2g/day). Follow-up in 4 weeks.',
+    },
+    dm2: {
+      prescription: 'Metformin 500mg — Twice daily with meals (PO) (Take with morning/evening meals)',
+      notes: 'Type 2 Diabetes Mellitus Management: Monitored HbA1c and fasting blood glucose. Patient counseled on hypoglycemic awareness and dietary compliance.',
+    },
+    amox: {
+      prescription: 'Amoxicillin / Clavulanate 875/125mg — Twice daily for 7 days (PO) (Complete full course)',
+      notes: 'Acute Bacterial Infection: Completed clinical evaluation, no penicillin allergy reported. Advised probiotic co-therapy.',
+    },
+    asthma: {
+      prescription: 'Albuterol HFA 90mcg/actuation — 1-2 puffs every 4-6 hours PRN (Use spacer)',
+      notes: 'Asthma Exacerbation Protocol: Peak flow measured. Asthmatic action plan reviewed with patient.',
+    },
+    fu: {
+      notes: 'Follow-up in 2-4 weeks or sooner if symptoms worsen. Patient instructed to seek emergency medical attention for severe red-flag symptoms.',
+    },
+  };
+
   function applyPreset(preset: PrescriptionPreset) {
-    setForm((current) => ({ ...current, prescription: `${preset.prescription} — ${preset.instructions}` }));
+    setForm((current) => ({
+      ...current,
+      prescription: `${preset.drug} ${preset.dosage} — ${preset.frequency} (${preset.instructions})`,
+      ...(preset.clinicalNotes && !current.notes ? { notes: preset.clinicalNotes } : {}),
+    }));
+  }
+
+  function applyMacro(macroKeyword: string, clinicalNotes: string) {
+    setForm((current) => ({
+      ...current,
+      notes: current.notes ? `${current.notes}\n\n${clinicalNotes}` : clinicalNotes,
+    }));
   }
 
   const mutation = useMutation({
@@ -414,17 +447,27 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
           <label className="block text-xs font-medium text-text-2">Prescription</label>
           {isChecking && <span className="text-2xs text-text-3">Cross-checking interactions…</span>}
         </div>
-        <PrescriptionPresets onApply={applyPreset} />
+        <PrescriptionPresets onApply={applyPreset} onApplyMacro={applyMacro} />
         <input
           value={form.prescription}
           onChange={(e) => {
             const value = e.target.value;
-            const macro = value.match(/(?:^|\s)\.([a-z0-9_-]+)$/i)?.[1]?.toLowerCase();
-            const expansion: Record<string, string> = { htn: 'Amlodipine 5mg — Once daily' };
-            setForm((f) => ({ ...f, prescription: macro && expansion[macro] ? value.slice(0, -(macro.length + 1)) + expansion[macro] : value }));
+            const match = value.match(/(?:^|\s)\.([a-z0-9_-]+)$/i);
+            const macro = match?.[1]?.toLowerCase();
+            if (macro && CLINICAL_MACROS[macro]?.prescription) {
+              const replacement = CLINICAL_MACROS[macro]!.prescription!;
+              const prefix = value.slice(0, -(macro.length + 1));
+              setForm((f) => ({
+                ...f,
+                prescription: prefix + replacement,
+                ...(CLINICAL_MACROS[macro]!.notes && !f.notes ? { notes: CLINICAL_MACROS[macro]!.notes! } : {}),
+              }));
+            } else {
+              setForm((f) => ({ ...f, prescription: value }));
+            }
           }}
-          placeholder="e.g. Amoxicillin 500mg TID, Warfarin 5mg, Ibuprofen 600mg"
-          className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
+          placeholder="e.g. Amoxicillin 500mg TID, Warfarin 5mg (or type .htn, .dm2, .amox)"
+          className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus font-sans"
         />
 
         {/* Patient Profile Context Badge */}
@@ -534,12 +577,26 @@ export default function NewRecordForm({ patientAddress, onSuccess, patientAllerg
       )}
 
       <div>
-        <label className="block text-xs font-medium text-text-2 mb-1">Notes</label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs font-medium text-text-2">Notes & Clinical Observations</label>
+          <span className="text-2xs text-text-3 font-mono">Type .htn, .dm2, .amox, .asthma, .fu to expand clinical macros</span>
+        </div>
         <textarea
           rows={3}
           value={form.notes}
-          onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-          placeholder="Additional clinical observations, follow-up instructions…"
+          onChange={(e) => {
+            const value = e.target.value;
+            const match = value.match(/(?:^|\s)\.([a-z0-9_-]+)$/i);
+            const macro = match?.[1]?.toLowerCase();
+            if (macro && CLINICAL_MACROS[macro]?.notes) {
+              const replacement = CLINICAL_MACROS[macro]!.notes!;
+              const prefix = value.slice(0, -(macro.length + 1));
+              setForm((f) => ({ ...f, notes: prefix + replacement }));
+            } else {
+              setForm((f) => ({ ...f, notes: value }));
+            }
+          }}
+          placeholder="Additional clinical observations, follow-up instructions (or shorthand e.g. .htn, .fu)…"
           className="w-full rounded-md border border-border px-3 py-2 text-sm bg-surface-inset text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
         />
       </div>
