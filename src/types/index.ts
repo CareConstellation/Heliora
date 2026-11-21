@@ -464,3 +464,53 @@ export interface StepAwayContact {
   target: string;
 }
 
+
+
+/* ─── Insurance policy claim tracker & smart contract auto-reimbursement (#164) ─── */
+
+export type ClaimStatus = 'Submitted' | 'In Review' | 'Approved' | 'Disbursed';
+
+export interface InsurancePolicyRecord {
+  policyNumber: string;
+  providerName: string;
+  planType: string;
+  subscriberId: string;
+  groupNumber: string;
+  coveragePercent: number;
+  copayAmountUsd: number;
+  deductibleRemainingUsd: number;
+  status: 'ACTIVE' | 'EXPIRED' | 'PENDING_VERIFICATION';
+  smartContractVerifierAddress: string;
+}
+
+export interface ClaimExpenseItem {
+  code: string;
+  description: string;
+  grossAmount: number;
+  insuranceCoveredAmount: number;
+  patientCopayAmount: number;
+}
+
+export interface InsuranceClaimRecord {
+  claimId: string;
+  appointmentId: string;
+  receiptNumber: string;
+  serviceDate: string;
+  submittedAt: string;
+  providerName: string;
+  facilityName: string;
+  policyNumber: string;
+  status: ClaimStatus;
+  statusTimestamp: string;
+  items: ClaimExpenseItem[];
+  totalGrossAmount: number;
+  totalCoveredAmount: number;
+  totalCopayAmount: number;
+  reimbursementTx?: {
+    txHash: string;
+    tokenSymbol: string;
+    amount: number;
+    payoutTimestamp: string;
+    settledOnChain: boolean;
+  };
+}
