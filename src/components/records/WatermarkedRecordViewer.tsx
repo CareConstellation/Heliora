@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useWalletStore } from '@/store/useWalletStore';
+import { sanitizeImageSource } from '@/lib/svgSanitizer';
 import {
   computeViewerFingerprint,
   renderCanvasWatermark,
@@ -36,6 +37,7 @@ export default function WatermarkedRecordViewer({ src, alt, type, className }: P
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { publicKey } = useWalletStore();
+  const safeSrc = useMemo(() => sanitizeImageSource(src), [src]);
 
   const applyWatermark = useCallback(async () => {
     const canvas = canvasRef.current;
@@ -66,7 +68,7 @@ export default function WatermarkedRecordViewer({ src, alt, type, className }: P
 
         renderCanvasWatermark(ctx, canvas.width, canvas.height, config);
       };
-      img.src = src;
+      img.src = safeSrc;
     } else {
       canvas.width = containerRef.current?.clientWidth ?? 800;
       canvas.height = containerRef.current?.clientHeight ?? 1100;
@@ -74,7 +76,7 @@ export default function WatermarkedRecordViewer({ src, alt, type, className }: P
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       renderCanvasWatermark(ctx, canvas.width, canvas.height, config);
     }
-  }, [src, type, publicKey]);
+  }, [safeSrc, type, publicKey]);
 
   useEffect(() => {
     void applyWatermark();
@@ -94,7 +96,7 @@ export default function WatermarkedRecordViewer({ src, alt, type, className }: P
     >
       {type === 'pdf' && (
         <iframe
-          src={src}
+          src={safeSrc}
           title={alt ?? 'Medical record'}
           className="w-full h-full border-0"
           style={{ pointerEvents: 'auto' }}

@@ -1,7 +1,8 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { sanitizeImageSource } from '@/lib/svgSanitizer';
 
 interface AvatarProps {
   src?: string | null;
@@ -21,15 +22,16 @@ export function Avatar({
   priority = false,
 }: AvatarProps) {
   const [imgError, setImgError] = useState(false);
+  const safeSrc = useMemo(() => (src ? sanitizeImageSource(src) : ''), [src]);
 
-  if (src && !imgError) {
+  if (safeSrc && !imgError) {
     return (
       <div
         className={`relative shrink-0 rounded-full overflow-hidden ${className}`}
         style={{ width: size, height: size }}
       >
         <Image
-          src={src}
+          src={safeSrc}
           alt={alt}
           width={size}
           height={size}

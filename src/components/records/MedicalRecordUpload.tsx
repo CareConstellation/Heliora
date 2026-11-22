@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { encryptFile, exportKey, hashBuffer } from '@/lib/crypto';
 import { sanitizeFile, UnsafeFileError } from '@/lib/fileSanitizer';
+import { isSvgFile, sanitizeSvg, UnsafeSvgError } from '@/lib/svgSanitizer';
 import { computeCid } from '@/lib/ipfs';
 import {
   createIpfsUploadUrl,
@@ -13,10 +14,25 @@ import {
 import { useToast } from '@/hooks/useToast';
 import type { EncryptedRecord } from '@/types';
 
-const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png', 'application/dicom'];
+const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png', 'image/svg+xml', 'application/dicom'];
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 // Browsers usually report DICOM scans with an empty MIME type; the sanitizer checks the real format from the bytes.
-const isAccepted = (file: File) => ACCEPTED.includes(file.type) || /\.dcm$/i.test(file.name);
+const isAccepted = (file: File) =>
+  ACCEPTED.includes(file.type) || /\.dcm$/i.test(file.name) || isSvgFile(file);
+
+interface SanitizedUpload {
+  file: File;
+  removed: string[];
+}
+
+/** SVG lab charts and dental diagrams are sanitized in place before encryption. */
+async function sanitizeSvgUpload(file: File): Promise<SanitizedUpload> {
+  const { svg, removed } = sanitizeSvg(await file.text());
+  return {
+    file: new File([svg], file.name, { type: 'image/svg+xml' }),
+    removed: [...removed, 'unsafe SVG script, event handler and URI constructs'],
+  };
+}
 
 interface Props {
   patientAddress: string;
@@ -36,7 +52,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
     mutationFn: async (file: File) => {
       // Validate
       if (!isAccepted(file)) {
-        throw new Error('Unsupported file type. Please upload a PDF, JPEG, PNG, or DICOM file.');
+        throw new Error('Unsupported file type. Please upload a PDF, JPEG, PNG, SVG, or DICOM file.');
       }
       if (file.size > MAX_BYTES) {
         throw new Error('File exceeds the 10 MB limit.');
@@ -45,7 +61,9 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       // Strip identifying metadata and reject active or malformed content before encryption
       setThreats([]);
       setProgress('sanitizing');
-      const sanitized = await sanitizeFile(file);
+      const sanitized = isSvgFile(file)
+        ? await sanitizeSvgUpload(file)
+        : await sanitizeFile(file);
 
       // Encrypt
       setProgress('encrypting');
@@ -94,6 +112,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
     onError: (err: Error) => {
       setProgress('idle');
       if (err instanceof UnsafeFileError) setThreats(err.threats);
+      else if (err instanceof UnsafeSvgError) setThreats(err.threats);
       toast(err.message || 'Upload failed. Please try again.', 'error');
       console.error('[MedicalRecordUpload]', err);
     },
@@ -111,7 +130,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <p className="text-3xl mb-2">🔒</p>
       <p className="font-medium text-text-1">Upload Encrypted Medical Record</p>
       <p className="text-xs text-text-3 mt-1">
-        PDF, JPEG, PNG or DICOM · max 10 MB · metadata stripped and encrypted before upload
+        PDF, JPEG, PNG, SVG or DICOM · max 10 MB · sanitized, metadata stripped and encrypted before upload
       </p>
 
       {progress !== 'idle' && (
@@ -146,7 +165,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.jpg,.jpeg,.png,.dcm"
+        accept=".pdf,.jpg,.jpeg,.png,.svg,.dcm"
         className="hidden"
         onChange={handleChange}
       />
