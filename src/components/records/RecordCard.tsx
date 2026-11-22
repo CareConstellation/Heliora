@@ -6,7 +6,7 @@ import { shareRecord } from '@/services/api.service';
 import RecordDetailDrawer from './RecordDetailDrawer';
 import { useToast } from '@/hooks/useToast';
 import { useContactResolver } from '@/hooks/useAddressBook';
-import { resolveAddressInput } from '@/lib/addressBook';
+import { resolveInputAddress, federationErrorMessage } from '@/lib/federationInput';
 import ContactAddressInput from '@/components/contacts/ContactAddressInput';
 import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 
@@ -16,6 +16,7 @@ interface Props {
 
 function RecordCard({ record }: Props) {
   const { toast } = useToast();
+  const { contacts } = useContactResolver();
   const [showDrawer, setShowDrawer] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [showShareForm, setShowShareForm] = useState(false);
@@ -27,19 +28,23 @@ function RecordCard({ record }: Props) {
   } | null>(null);
 
   async function handleShare() {
-    const providerAddress = resolveAddressInput(provider, contacts);
-    if (!providerAddress) {
-      toast('Enter a valid Stellar address or the name of a trusted contact.', 'error');
-      return;
-    }
     setSharing(true);
     try {
-      const result = await shareRecord(record.id, providerAddress);
-      setShareInfo({ token: result.token, expiresAt: result.expiresAt, providerAddress });
+      const resolution = await resolveInputAddress(provider, contacts);
+      if (!resolution) {
+        toast('Enter a valid Stellar address, federated address or trusted contact.', 'error');
+        return;
+      }
+      const result = await shareRecord(record.id, resolution.publicKey);
+      setShareInfo({
+        token: result.token,
+        expiresAt: result.expiresAt,
+        providerAddress: resolution.publicKey,
+      });
       setShowShareForm(false);
       setProvider('');
-    } catch {
-      toast('Failed to generate share token.', 'error');
+    } catch (err) {
+      toast(federationErrorMessage(err), 'error');
     } finally {
       setSharing(false);
     }

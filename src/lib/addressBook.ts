@@ -21,6 +21,7 @@
 
 import { Buffer } from 'buffer';
 import { StrKey } from '@stellar/stellar-sdk';
+import { isFederatedAddress } from '@/lib/stellar';
 import type { AddressBook, EncryptedAddressBookBackup, TrustedContact } from '@/types';
 
 export const ALIAS_MAX_LENGTH = 64;
@@ -58,8 +59,11 @@ export function activeContacts(book: AddressBook): TrustedContact[] {
 
 /** Returns why a contact cannot be saved, or `null` when it is valid. */
 export function validateContactInput(input: ContactInput): string | null {
-  if (!StrKey.isValidEd25519PublicKey(input.publicKey.trim())) {
-    return 'Enter a valid Stellar public key (G…).';
+  if (
+    !StrKey.isValidEd25519PublicKey(input.publicKey.trim()) &&
+    !isFederatedAddress(input.publicKey)
+  ) {
+    return 'Enter a valid Stellar public key (G…) or federated address (name*domain).';
   }
   const alias = input.alias.trim();
   if (!alias) return 'Give the contact a name.';

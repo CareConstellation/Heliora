@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { StrKey, TransactionBuilder } from '@stellar/stellar-sdk';
+import { TransactionBuilder } from '@stellar/stellar-sdk';
 import {
   AlertCircle,
   ArrowRight,
@@ -28,6 +28,8 @@ import {
   type MergeAccountSnapshot,
   type MergeAssetStatus,
 } from '@/lib/stellar';
+import FederationHint from '@/components/contacts/FederationHint';
+import { resolveInputAddress } from '@/lib/federationInput';
 import { useWalletStore } from '@/store/useWalletStore';
 
 type MergeStep = 'destination' | 'assets' | 'records' | 'review' | 'complete';
@@ -125,17 +127,27 @@ export default function AccountMergeWizard() {
       setDestinationError('Enter the public key of the wallet you are switching to.');
       return;
     }
-    if (!StrKey.isValidEd25519PublicKey(key)) {
-      setDestinationError('That is not a valid Stellar public key. It has to start with "G".');
+    let resolvedKey: string;
+    try {
+      const resolution = await resolveInputAddress(key);
+      if (!resolution) {
+        setDestinationError('That is not a valid Stellar public key or federated address.');
+        return;
+      }
+      resolvedKey = resolution.publicKey;
+    } catch (err) {
+      setDestinationError(
+        err instanceof Error ? err.message : 'Could not resolve that federated address.',
+      );
       return;
     }
-    if (key === publicKey) {
+    if (resolvedKey === publicKey) {
       setDestinationError('The new wallet has to be different from the connected account.');
       return;
     }
 
     setCheckingDestination(true);
-    const result = await lookupMergeAccount(key);
+    const result = await lookupMergeAccount(resolvedKey);
     setCheckingDestination(false);
 
     if (result.status === 'not-found') {
@@ -388,11 +400,12 @@ export default function AccountMergeWizard() {
             id="destination-key"
             value={destinationInput}
             onChange={(event) => setDestinationInput(event.target.value)}
-            placeholder="G…"
+            placeholder="G… or name*domain"
             autoComplete="off"
             spellCheck={false}
             className="w-full rounded-md border border-border bg-surface-inset px-3 py-2 font-mono text-xs text-text-1 placeholder:text-text-3"
           />
+          <FederationHint value={destinationInput} />
 
           {destinationError && (
             <p role="alert" className="text-xs text-red-600 mt-2">

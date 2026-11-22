@@ -13,6 +13,8 @@ import {
   Upload,
 } from 'lucide-react';
 import { useAddressBook } from '@/hooks/useAddressBook';
+import FederationHint from '@/components/contacts/FederationHint';
+import { resolveInputAddress } from '@/lib/federationInput';
 import {
   ALIAS_MAX_LENGTH,
   NOTES_MAX_LENGTH,
@@ -195,12 +197,16 @@ export default function AddressBookManager({ signMessage }: { signMessage?: Mess
             return;
           }
           void run('save', async () => {
+            const resolution = await resolveInputAddress(form.publicKey);
+            if (!resolution)
+              throw new Error('Enter a valid Stellar public key or federated address.');
+            const resolved = { ...form, publicKey: resolution.publicKey };
             if (editingId) {
-              await book.update(editingId, form);
+              await book.update(editingId, resolved);
               resetForm();
               return 'Contact updated.';
             }
-            const contact = await book.add(form);
+            const contact = await book.add(resolved);
             resetForm();
             return contact.verified
               ? `Saved ${contact.alias} — verified as ${contact.verifiedName}.`
@@ -247,11 +253,12 @@ export default function AddressBookManager({ signMessage }: { signMessage?: Mess
             id="contact-key"
             value={form.publicKey}
             onChange={(e) => setForm({ ...form, publicKey: e.target.value })}
-            placeholder="G…"
+            placeholder="G… or name*domain"
             spellCheck={false}
             className={`${inputClass} font-mono`}
             style={inputStyle}
           />
+          <FederationHint value={form.publicKey} />
         </div>
         <div>
           <label htmlFor="contact-notes" className="block text-xs text-text-2 mb-1">

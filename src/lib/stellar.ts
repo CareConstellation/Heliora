@@ -1,5 +1,15 @@
-import { BASE_FEE, Networks, TransactionBuilder, rpc, type xdr } from '@stellar/stellar-sdk';
-import { signTransaction } from '@stellar/freighter-api';
+import {
+  BASE_FEE,
+  hash as sha256,
+  Keypair,
+  Memo,
+  Networks,
+  StrKey,
+  TransactionBuilder,
+  rpc,
+  type xdr,
+} from '@stellar/stellar-sdk';
+import { signMessage, signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
 
@@ -368,4 +378,288 @@ export async function assembleAdminConfigEnvelope(
   const hashPreview = `tx_${Date.now().toString(16)}${Math.random().toString(36).substring(2, 8)}`;
 
   return { xdr, hashPreview };
+}
+
+
+const FEDERATION_DOMAIN_PATTERN =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/;
+const FEDERATED_ADDRESS_PATTERN = /^([A-Za-z0-9_.-]+)\*([A-Za-z0-9.-]+)$/;
+const FEDERATION_TIMEOUT_MS = 5000;
+const FEDERATION_MEMO_TYPES = ['text', 'id', 'hash', 'return'] as const;
+const MAX_FEDERATION_TEXT_MEMO_BYTES = 28;
+const MAX_FEDERATION_ID_MEMO = 18446744073709551615n;
+
+const federationServerCache = new Map<string, Promise<string>>();
+const reverseFederationCache = new Map<string, Promise<string | null>>();
+
+export type FederationMemoType = (typeof FEDERATION_MEMO_TYPES)[number];
+
+export interface FederatedAddress {
+  name: string;
+  domain: string;
+  address: string;
+}
+
+export interface FederationResolution {
+  address: string;
+  publicKey: string;
+  memoType: FederationMemoType | null;
+  memo: string | null;
+}
+
+export class FederationError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'FederationError';
+  }
+}
+
+export function getFederationDomain(): string {
+  return (process.env.NEXT_PUBLIC_FEDERATION_DOMAIN || 'heliora.io').trim().toLowerCase();
+}
+
+function isValidFederationDomain(value: string): boolean {
+  return value === 'localhost' || FEDERATION_DOMAIN_PATTERN.test(value);
+}
+
+export function parseFederatedAddress(value: string): FederatedAddress | null {
+  const match = FEDERATED_ADDRESS_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const name = match[1]!;
+  const domain = match[2]!.toLowerCase();
+  if (!isValidFederationDomain(domain)) return null;
+  return { name, domain, address: `${name}*${domain}` };
+}
+
+export function isFederatedAddress(value: string): boolean {
+  return parseFederatedAddress(value) !== null;
+}
+
+function normalizeFederationServerUrl(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (
+    url.username ||
+    url.password ||
+    (url.protocol !== 'https:' && !(url.protocol === 'http:' && local))
+  ) {
+    return null;
+  }
+  return url.toString().replace(/\/+$/, '');
+}
+
+export function parseFederationServerFromToml(toml: string): string | null {
+  for (const rawLine of toml.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    const match = /^FEDERATION_SERVER\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(line);
+    if (!match) continue;
+    const url = normalizeFederationServerUrl((match[1] ?? match[2] ?? match[3] ?? '').trim());
+    if (url) return url;
+  }
+  return null;
+}
+
+export async function getFederationServer(domain: string): Promise<string> {
+  const normalized = domain.trim().toLowerCase();
+  if (!isValidFederationDomain(normalized)) {
+    throw new FederationError(`“${domain}” is not a valid federation domain.`);
+  }
+
+  let cached = federationServerCache.get(normalized);
+  if (!cached) {
+    cached = (async () => {
+      let response: Response;
+      try {
+        response = await fetch(`https://${normalized}/.well-known/stellar.toml`, {
+          headers: { Accept: 'text/plain' },
+          signal: AbortSignal.timeout(FEDERATION_TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new FederationError(
+          `Could not read the federation configuration for ${normalized}.`,
+          err,
+        );
+      }
+      if (!response.ok) {
+        throw new FederationError(
+          `${normalized} does not publish a stellar.toml federation server (HTTP ${response.status}).`,
+        );
+      }
+      let toml: string;
+      try {
+        toml = await response.text();
+      } catch (err) {
+        throw new FederationError(
+          `Could not read the federation configuration for ${normalized}.`,
+          err,
+        );
+      }
+      const server = parseFederationServerFromToml(toml);
+      if (!server) {
+        throw new FederationError(`${normalized} does not publish a federation server.`);
+      }
+      return server;
+    })();
+    cached.catch(() => federationServerCache.delete(normalized));
+    federationServerCache.set(normalized, cached);
+  }
+  return cached;
+}
+
+export function clearFederationCache(): void {
+  federationServerCache.clear();
+  reverseFederationCache.clear();
+}
+
+interface FederationResponse {
+  stellar_address?: unknown;
+  account_id?: unknown;
+  memo_type?: unknown;
+  memo?: unknown;
+}
+
+async function queryFederationServer(
+  server: string,
+  query: string,
+  type: 'name' | 'id',
+): Promise<FederationResponse | null> {
+  const url = new URL(server);
+  url.searchParams.set('q', query);
+  url.searchParams.set('type', type);
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(FEDERATION_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new FederationError('Could not reach the federation server.', err);
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new FederationError(`Federation server returned HTTP ${response.status}.`);
+  }
+  try {
+    return (await response.json()) as FederationResponse;
+  } catch (err) {
+    throw new FederationError('Federation server returned invalid JSON.', err);
+  }
+}
+
+function normalizeFederationMemo(
+  memoType: unknown,
+  memo: unknown,
+): Pick<FederationResolution, 'memoType' | 'memo'> {
+  if (memoType == null && memo == null) return { memoType: null, memo: null };
+  if (
+    typeof memoType !== 'string' ||
+    !FEDERATION_MEMO_TYPES.includes(memoType as FederationMemoType) ||
+    typeof memo !== 'string' ||
+    !memo
+  ) {
+    throw new FederationError('The federation server returned an invalid memo requirement.');
+  }
+
+  let valid = false;
+  switch (memoType) {
+    case 'text':
+      valid = new TextEncoder().encode(memo).length <= MAX_FEDERATION_TEXT_MEMO_BYTES;
+      break;
+    case 'id':
+      valid = /^\d+$/.test(memo) && BigInt(memo) <= MAX_FEDERATION_ID_MEMO;
+      break;
+    case 'hash':
+    case 'return':
+      valid = /^[0-9a-fA-F]{64}$/.test(memo);
+      break;
+  }
+  if (!valid)
+    throw new FederationError('The federation server returned an invalid memo requirement.');
+  return { memoType: memoType as FederationMemoType, memo };
+}
+
+export async function resolveFederatedAddress(address: string): Promise<FederationResolution> {
+  const parsed = parseFederatedAddress(address);
+  if (!parsed) {
+    throw new FederationError('Enter a federated address in the format name*domain.com.');
+  }
+
+  const server = await getFederationServer(parsed.domain);
+  const record = await queryFederationServer(server, parsed.address, 'name');
+  if (!record) throw new FederationError(`No Stellar account is registered for ${parsed.address}.`);
+  if (typeof record.account_id !== 'string' || !StrKey.isValidEd25519PublicKey(record.account_id)) {
+    throw new FederationError('The federation server returned an invalid Stellar public key.');
+  }
+  if (
+    typeof record.stellar_address === 'string' &&
+    record.stellar_address.toLowerCase() !== parsed.address.toLowerCase()
+  ) {
+    throw new FederationError('The federation server returned a different federated address.');
+  }
+
+  return {
+    address: parsed.address,
+    publicKey: record.account_id,
+    ...normalizeFederationMemo(record.memo_type, record.memo),
+  };
+}
+
+export async function resolveWalletAddress(value: string): Promise<FederationResolution> {
+  const input = value.trim();
+  if (!input) throw new FederationError('Enter a Stellar address.');
+  if (StrKey.isValidEd25519PublicKey(input)) {
+    return { address: input, publicKey: input, memoType: null, memo: null };
+  }
+  return resolveFederatedAddress(input);
+}
+
+export function createFederationMemo(resolution: FederationResolution): Memo | undefined {
+  if (!resolution.memoType || !resolution.memo) return undefined;
+  switch (resolution.memoType) {
+    case 'text':
+      return Memo.text(resolution.memo);
+    case 'id':
+      return Memo.id(resolution.memo);
+    case 'hash':
+      return Memo.hash(resolution.memo);
+    case 'return':
+      return Memo.return(resolution.memo);
+  }
+}
+
+export async function lookupFederationByAccount(
+  publicKey: string,
+  domain: string = getFederationDomain(),
+): Promise<string | null> {
+  if (!StrKey.isValidEd25519PublicKey(publicKey.trim())) {
+    throw new FederationError('Reverse federation requires a valid Stellar public key.');
+  }
+  const account = publicKey.trim();
+  const normalizedDomain = domain.trim().toLowerCase();
+  const cacheKey = `${normalizedDomain}|${account}`;
+  let cached = reverseFederationCache.get(cacheKey);
+  if (!cached) {
+    cached = (async () => {
+      const server = await getFederationServer(normalizedDomain);
+      const record = await queryFederationServer(server, account, 'id');
+      if (!record) return null;
+      if (record.account_id !== account) {
+        throw new FederationError('The federation server returned a different Stellar account.');
+      }
+      if (typeof record.stellar_address !== 'string') return null;
+      return parseFederatedAddress(record.stellar_address)?.address ?? null;
+    })();
+    cached.catch(() => reverseFederationCache.delete(cacheKey));
+    reverseFederationCache.set(cacheKey, cached);
+  }
+  return cached;
 }

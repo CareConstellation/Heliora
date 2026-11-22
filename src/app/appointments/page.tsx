@@ -18,7 +18,13 @@ import { emitAppEvent } from '@/lib/appEvents';
 import FeeInvoice from '@/components/appointments/FeeInvoice';
 import { computeFeeInvoice } from '@/lib/feeSubsidy';
 import { useWalletStore } from '@/store/useWalletStore';
-import { STELLAR_CONFIG, type StrictReceivePathQuote } from '@/lib/stellar';
+import {
+  STELLAR_CONFIG,
+  createFederationMemo,
+  resolveWalletAddress,
+  type StrictReceivePathQuote,
+} from '@/lib/stellar';
+import FederationHint, { useFederatedResolution } from '@/components/contacts/FederationHint';
 import PathPaymentSelector from '@/components/appointments/PathPaymentSelector';
 import { withVideoRoom } from '@/lib/video';
 import type {
@@ -37,6 +43,8 @@ function BookingFlow() {
   const { publicKey } = useWalletStore();
   const [step, setStep] = useState<Step>('search');
   const [doctor, setDoctor] = useState<Doctor | null>(null);
+  const [providerInput, setProviderInput] = useState('');
+  const providerResolution = useFederatedResolution(providerInput);
   const [slot, setSlot] = useState<TimeSlot | null>(null);
   const [recurringPlan, setRecurringPlan] = useState<RecurringAppointmentPlan | null>(null);
   const [eligibilityProofs, setEligibilityProofs] = useState<EligibilityProofToken[]>([]);
@@ -75,12 +83,15 @@ function BookingFlow() {
     !!slot &&
     !!encryptedIntake &&
     (!recurringPlan || recurringPlan.allAvailable) &&
+    !!providerInput.trim() &&
+    !providerResolution.error &&
     (form.paymentMethod !== 'anchor' || isQuoteActive(quote));
 
   const bookMutation = useMutation({
     mutationFn: async () => {
       if (!doctor || !slot || !publicKey) throw new Error('Missing data');
       if (!encryptedIntake) throw new Error('Medical intake questionnaire must be completed before booking.');
+      const provider = await resolveWalletAddress(providerInput || doctor.address);
       if (recurringPlan && !recurringPlan.allAvailable) {
         throw new Error('One or more recurring slots are unavailable. Please select another starting slot.');
       }
@@ -104,13 +115,13 @@ function BookingFlow() {
           ? Operation.pathPaymentStrictReceive({
               sendAsset: pathPaymentQuote.sourceAsset,
               sendMax: pathPaymentQuote.sendMax,
-              destination: doctor.address,
+              destination: provider.publicKey,
               destAsset: pathPaymentQuote.destAsset,
               destAmount: String(fee),
               path: pathPaymentQuote.path,
             })
           : Operation.payment({
-              destination: doctor.address,
+              destination: provider.publicKey,
               asset: Asset.native(),
               amount: String(fee),
             });
@@ -121,10 +132,12 @@ function BookingFlow() {
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
         })
           .addOperation(paymentOp)
-          .setTimeout(30)
-          .build();
+          .setTimeout(30);
+        const memo = createFederationMemo(provider);
+        if (memo) tx.addMemo(memo);
+        const builtTx = tx.build();
 
-        const signed = await window.freighter.signTransaction(tx.toXDR(), {
+        const signed = await window.freighter.signTransaction(builtTx.toXDR(), {
           networkPassphrase:
             STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
         });
@@ -223,6 +236,7 @@ function BookingFlow() {
         <DoctorSearch
           onSelect={(d) => {
             setDoctor(d);
+            setProviderInput(d.address);
             setStep('slots');
           }}
         />
@@ -260,7 +274,7 @@ function BookingFlow() {
           </button>
           <IntakeQuestionnaire
             doctorName={doctor.name}
-            doctorAddress={doctor.address}
+            doctorAddress={providerResolution.resolution?.publicKey ?? providerInput}
             onComplete={handleIntakeComplete}
             onCancel={() => setStep('slots')}
           />
@@ -288,6 +302,21 @@ function BookingFlow() {
               {submitAttempted && !doctor && (
                 <p role="alert" className="mt-1 text-xs text-red-600">A doctor selection is required.</p>
               )}
+            </div>
+
+            <div>
+              <label htmlFor="provider-address" className="block text-xs font-medium text-slate-600 mb-1">
+                Provider Stellar address
+              </label>
+              <input
+                id="provider-address"
+                value={providerInput}
+                onChange={(e) => setProviderInput(e.target.value)}
+                placeholder="G… or name*domain"
+                spellCheck={false}
+                className="w-full rounded-md border border-border bg-surface-inset px-3 py-2 font-mono text-xs text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
+              />
+              <FederationHint value={providerInput} />
             </div>
 
             {/* Slot field — read-only, shown as confirmation */}
@@ -436,7 +465,9 @@ function BookingFlow() {
             </div>
 
             {bookMutation.isError && (
-              <p role="alert" className="text-xs text-red-600">Booking failed. Please try again.</p>
+              <p role="alert" className="text-xs text-red-600">
+                {bookMutation.error instanceof Error ? bookMutation.error.message : 'Booking failed. Please try again.'}
+              </p>
             )}
 
             <button

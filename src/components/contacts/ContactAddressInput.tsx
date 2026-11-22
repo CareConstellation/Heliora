@@ -4,6 +4,8 @@ import { useId } from 'react';
 import { BadgeCheck } from 'lucide-react';
 import { useContactResolver } from '@/hooks/useAddressBook';
 import { contactDisplayName, resolveAddressInput } from '@/lib/addressBook';
+import { isFederatedAddress } from '@/lib/stellar';
+import FederationHint from './FederationHint';
 
 interface Props {
   id: string;
@@ -25,7 +27,7 @@ export default function ContactAddressInput({
   label,
   value,
   onChange,
-  placeholder = 'Stellar address (G…) or contact name',
+  placeholder = 'Stellar address (G…), name*domain or contact name',
   className = '',
   labelClassName = 'sr-only',
 }: Props) {
@@ -80,11 +82,14 @@ export default function ContactAddressInput({
             </span>
           ) : resolvedKey ? (
             'Not in your trusted contacts. Double-check this address.'
+          ) : isFederatedAddress(typed) ? (
+            'Federated address.'
           ) : (
-            'Enter a Stellar address or the exact name of a trusted contact.'
+            'Enter a Stellar address, name*domain or the exact name of a trusted contact.'
           )}
         </p>
       )}
+      <FederationHint value={value} />
     </div>
   );
 }
