@@ -122,6 +122,16 @@ export interface EligibilityProofToken {
   publicSignals: string[];
 }
 
+/**
+ * Proof that a policy's spend meets its deductible.
+ * Public signals are `[deductible, commitment]`; the spend stays private.
+ */
+export interface DeductibleProofToken {
+  kind: 'deductible';
+  proof: unknown;
+  publicSignals: string[];
+}
+
 export interface NewRecordPayload {
   patientAddress: string;
   diagnosis: string;
