@@ -13,7 +13,8 @@ export function middleware(request: NextRequest) {
     `img-src 'self' data: blob: https:`,
     `font-src 'self' data: https:`,
     `connect-src 'self' https://horizon-testnet.stellar.org https://horizon.stellar.org wss://horizon-testnet.stellar.org wss://horizon.stellar.org https://soroban-testnet.stellar.org https://rpc-soroban.stellar.org wss://*.daily.co https://*.daily.co https://*.sentry.io`,
-    `frame-src 'self' https://*.daily.co https://c-careconstellation.daily.co`,
+    // blob: lets the admin credential reviewer render PDFs fetched through the authenticated API.
+    `frame-src 'self' blob: https://*.daily.co https://c-careconstellation.daily.co`,
     `frame-ancestors 'none'`,
     `object-src 'none'`,
     `base-uri 'self'`,

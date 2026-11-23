@@ -72,6 +72,11 @@ Copy `.env.example` to `.env.local` before running the app. Each variable is des
 | `NEXT_PUBLIC_AUTH_SIGNING_KEY` | For login | — | Backend SEP-10 signing key; challenges not signed by it are rejected before the wallet signs. Also verifies anti-phishing shield attestations. |
 | `NEXT_PUBLIC_AUTH_HOME_DOMAIN` | No | API host | Home domain the backend puts in SEP-10 challenges. |
 | `NEXT_PUBLIC_OFFICIAL_DOMAINS` | Recommended in production | — | Comma-separated hostnames of the genuine frontend (e.g. `app.heliora.io`). The login page warns on any other hostname or without HTTPS. |
+| `NEXT_PUBLIC_SENTRY_DSN` | For monitoring | — | Sentry DSN. Sentry is disabled when unset or outside production. |
+| `NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE` | No | `0.1` (prod) | Base performance-tracing sample rate (0–1). |
+| `NEXT_PUBLIC_SENTRY_STELLAR_TRACES_SAMPLE_RATE` | No | `0.5` (prod) | Sample rate for Stellar/Soroban transaction lifecycle traces. |
+| `NEXT_PUBLIC_SENTRY_REPLAY_SESSION_SAMPLE_RATE` | No | `0.1` | Session replay sample rate (replays mask all text and inputs). |
+| `NEXT_PUBLIC_ACCESS_CONTROL_CONTRACT_ID` | For admin approvals | — | Access control contract. The admin verification queue signs `grant_role` on it. |
 
 ### How to obtain each value
 

@@ -62,6 +62,7 @@ export default function NoShowDisputes({ hospitalAddress }: Props) {
         hospitalAddress,
         buildResolveNoShowOperation(signed),
         freighterSigner,
+        'soroban.resolve_no_show',
       );
     },
     onSuccess: (txHash, attendance) => {

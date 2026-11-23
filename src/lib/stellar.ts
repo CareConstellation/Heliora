@@ -1,17 +1,17 @@
+import { Buffer } from 'buffer';
 import {
   BASE_FEE,
-  hash as sha256,
   Keypair,
-  Memo,
   Networks,
-  StrKey,
   TransactionBuilder,
+  hash as sha256,
   rpc,
   type xdr,
 } from '@stellar/stellar-sdk';
 import { signMessage, signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
+import { traceHorizonCall, traceStellarTransaction } from '@/lib/sentry';
 
 interface EndpointHealth {
   url: string;
@@ -155,24 +155,27 @@ export async function callHorizonWithFallback<T>(fn: (url: string) => Promise<T>
     })
     .map(h => h.url);
 
-  let lastError: unknown;
+  return traceHorizonCall(async (recordAttempt) => {
+    let lastError: unknown;
 
-  for (const url of endpointsToTry) {
-    try {
-      const result = await fn(url);
-      resetEndpointFailure(url);
-      return result;
-    } catch (err: unknown) {
-      lastError = err;
-      const health = endpointHealth.get(url);
-      if (health) {
-        health.failureCount++;
-        health.isHealthy = health.failureCount < MAX_FAILURES;
+    for (const url of endpointsToTry) {
+      recordAttempt(url);
+      try {
+        const result = await fn(url);
+        resetEndpointFailure(url);
+        return result;
+      } catch (err: unknown) {
+        lastError = err;
+        const health = endpointHealth.get(url);
+        if (health) {
+          health.failureCount++;
+          health.isHealthy = health.failureCount < MAX_FAILURES;
+        }
       }
     }
-  }
 
-  throw lastError;
+    throw lastError;
+  });
 }
 
 /**
@@ -285,39 +288,65 @@ const SOROBAN_POLL_ATTEMPTS = 30; // ~1 s apart, i.e. about 5 ledgers
  * Simulates, signs, submits and confirms a single Soroban contract invocation.
  * `prepareTransaction` runs `simulateTransaction` and attaches the footprint,
  * authorization entries and resource fee before the wallet signs.
+ *
+ * The lifecycle is traced in Sentry as one `stellar.tx` span with
+ * build → simulate → sign → submit → confirm child spans (see `traceStellarTransaction`).
+ * @param spanName - Name of the parent span, e.g. `soroban.grant_role`.
  * @returns The confirmed transaction hash.
  */
 export async function invokeSorobanContract(
   source: string,
   operation: xdr.Operation,
   sign: TransactionSigner,
+  spanName = 'soroban.invoke',
 ): Promise<string> {
   if (!STELLAR_CONFIG.sorobanRpcUrl) throw new Error('NEXT_PUBLIC_SOROBAN_RPC_URL is not configured.');
   const server = new rpc.Server(STELLAR_CONFIG.sorobanRpcUrl);
-  const tx = new TransactionBuilder(await server.getAccount(source), {
-    fee: BASE_FEE,
-    networkPassphrase: STELLAR_CONFIG.passphrase,
-  })
-    .addOperation(operation)
-    .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
-    .build();
 
-  const prepared = await server.prepareTransaction(tx);
-  const signedXdr = await sign(prepared.toXDR(), STELLAR_CONFIG.passphrase, source);
-  const sent = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.passphrase));
-  if (sent.status !== 'PENDING' && sent.status !== 'DUPLICATE') {
-    throw new Error(`Soroban transaction was not accepted (${sent.status}).`);
-  }
+  return traceStellarTransaction(
+    spanName,
+    { 'stellar.network': STELLAR_CONFIG.network },
+    async (step, setTxHash) => {
+      const tx = await step('build', async () =>
+        new TransactionBuilder(await server.getAccount(source), {
+          fee: BASE_FEE,
+          networkPassphrase: STELLAR_CONFIG.passphrase,
+        })
+          .addOperation(operation)
+          .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+          .build(),
+      );
 
-  const result = await server.pollTransaction(sent.hash, { attempts: SOROBAN_POLL_ATTEMPTS });
-  if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
-    throw new Error(
-      result.status === rpc.Api.GetTransactionStatus.FAILED
-        ? `Soroban transaction ${sent.hash} failed.`
-        : `Soroban transaction ${sent.hash} was not confirmed in time.`,
-    );
-  }
-  return sent.hash;
+      const prepared = await step('simulate', () => server.prepareTransaction(tx));
+      const signedXdr = await step('sign', () =>
+        sign(prepared.toXDR(), STELLAR_CONFIG.passphrase, source),
+      );
+
+      const sent = await step('submit', async () => {
+        const response = await server.sendTransaction(
+          TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.passphrase),
+        );
+        if (response.status !== 'PENDING' && response.status !== 'DUPLICATE') {
+          throw new Error(`Soroban transaction was not accepted (${response.status}).`);
+        }
+        return response;
+      });
+      setTxHash(sent.hash);
+
+      await step('confirm', async () => {
+        const result = await server.pollTransaction(sent.hash, { attempts: SOROBAN_POLL_ATTEMPTS });
+        if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+          throw new Error(
+            result.status === rpc.Api.GetTransactionStatus.FAILED
+              ? `Soroban transaction ${sent.hash} failed.`
+              : `Soroban transaction ${sent.hash} was not confirmed in time.`,
+          );
+        }
+      });
+
+      return sent.hash;
+    },
+  );
 }
 
 

@@ -17,6 +17,8 @@
 7. [Anti-Phishing Shield](#anti-phishing-shield)
 8. [Delegated Proxy Access](#delegated-proxy-access)
 9. [Trusted Contacts](#trusted-contacts)
+10. [Admin Role Verification](#admin-role-verification)
+11. [Doctor Schedule Templates](#doctor-schedule-templates)
 
 ---
 
@@ -532,6 +534,178 @@ GET /backups/address-book/:owner      (404 when there is no backup)
 ```
 
 The backup is AES-256-GCM ciphertext. The key is derived on the client from the owner's wallet signature and never sent, so the server cannot read the contacts. The endpoints must be restricted to the authenticated owner.
+
+---
+
+## Admin Role Verification
+
+Role: `ADMIN`. Used by `RoleVerificationQueue` (`src/components/auth/RoleVerificationQueue.tsx`).
+
+### List Pending Applications
+
+```
+GET /admin/role-verifications?status=pending
+```
+
+**Response:** `RoleVerificationApplication[]`, oldest first.
+
+```json
+[
+  {
+    "id": "app_123",
+    "applicantAddress": "GDOC...",
+    "displayName": "Dr. Marcus Webb",
+    "email": "marcus@example.org",
+    "requestedRole": "DOCTOR",
+    "submittedAt": "2026-11-01T10:00:00.000Z",
+    "licenseNumber": "MD-2024-77821",
+    "issuingAuthority": "State Medical Board",
+    "jurisdiction": "US-CA",
+    "licenseExpiresAt": "2028-06-30T00:00:00.000Z",
+    "documents": [
+      {
+        "id": "doc_1",
+        "fileName": "license.pdf",
+        "kind": "medical_license",
+        "mimeType": "application/pdf",
+        "sizeBytes": 183422,
+        "uploadedAt": "2026-11-01T10:00:00.000Z"
+      }
+    ]
+  }
+]
+```
+
+### Download Credential Document
+
+```
+GET /admin/role-verifications/:applicationId/documents/:documentId
+```
+
+Streams the file (`application/pdf`). Credentials must never be served from public URLs. The client checks the `%PDF-` magic bytes before rendering the file in a `blob:` iframe.
+
+### Record Decision
+
+```
+POST /admin/role-verifications/:applicationId/decision
+```
+
+**Approve** (sent after the admin's wallet signed and confirmed `grant_role(admin, applicant, role)` on the access control contract):
+
+```json
+{ "decision": "approved", "grantTxHash": "e3b0…", "reviewerAddress": "GADMIN..." }
+```
+
+The backend should verify that `grantTxHash` is a successful `grant_role` invocation for this applicant and role before it marks the application approved.
+
+**Reject** (the reason is required; `note` is required when `reasonCode` is `OTHER`):
+
+```json
+{
+  "decision": "rejected",
+  "reasonCode": "LICENSE_EXPIRED",
+  "note": "optional, ≤ 500 chars",
+  "reviewerAddress": "GADMIN..."
+}
+```
+
+`reasonCode` is one of `LICENSE_UNVERIFIABLE`, `LICENSE_EXPIRED`, `DOCUMENT_ILLEGIBLE`, `NAME_MISMATCH`, `JURISDICTION_UNSUPPORTED`, `INCOMPLETE_SUBMISSION`, `SUSPECTED_FRAUD`, `OTHER`.
+
+In the same request the backend persists the decision, writes the audit entry and **dispatches the decision email** to the applicant, using a template chosen by decision and `reasonCode`. It answers `409` if the application was already decided.
+
+**Response:**
+
+```json
+{
+  "applicationId": "app_123",
+  "decision": "approved",
+  "decidedAt": "2026-11-02T09:00:00.000Z",
+  "notification": { "channel": "email", "status": "queued" }
+}
+```
+
+`notification.status` is `queued`, `sent` or `failed` (with `error`). A failed email never rolls back the decision.
+
+### Resend Decision Email
+
+```
+POST /admin/role-verifications/:applicationId/notify
+```
+
+**Response:** `{ "channel": "email", "status": "sent" }`
+
+---
+
+## Doctor Schedule Templates
+
+Role: `DOCTOR`. Used by `ScheduleTemplateBuilder` (`src/components/doctor/ScheduleTemplateBuilder.tsx`).
+
+### Get / Save Templates
+
+```
+GET /doctors/schedule-templates?doctorAddress=G...
+PUT /doctors/schedule-templates
+```
+
+```json
+{
+  "doctorAddress": "GDOC...",
+  "templates": [
+    {
+      "id": "tpl-1",
+      "name": "Standard Clinic Week",
+      "slotMinutes": 30,
+      "blocks": [{ "id": "b1", "day": 0, "startMinute": 540, "endMinute": 720 }]
+    }
+  ],
+  "activeTemplateId": "tpl-1",
+  "overrides": [
+    { "date": "2026-12-25", "kind": "holiday", "label": "Christmas Day" },
+    {
+      "date": "2026-12-03",
+      "kind": "custom",
+      "label": "Half day",
+      "blocks": [{ "startMinute": 540, "endMinute": 720 }]
+    }
+  ],
+  "version": 3
+}
+```
+
+`day` is 0 = Monday … 6 = Sunday. Minutes count from local midnight. The `GET` returns `404` when nothing has been saved, and the UI then starts from presets. The `PUT` should answer `409` when `version` is stale.
+
+### Bulk Publish Slots (atomic)
+
+```
+POST /doctors/slots/bulk
+Idempotency-Key: publish-…
+```
+
+```json
+{
+  "doctorAddress": "GDOC...",
+  "atomic": true,
+  "slots": [
+    {
+      "id": "GDOC...:2026-12-01T09:00:00.000Z",
+      "datetime": "2026-12-01T09:00:00.000Z",
+      "available": true,
+      "slotType": "regular"
+    }
+  ]
+}
+```
+
+The backend must check **every** slot against existing slots and booked (non-cancelled) appointments inside a single database transaction. If any slot conflicts, nothing is written and it answers:
+
+```json
+// 409 Conflict
+{ "conflicts": [{ "slotId": "…", "datetime": "…", "reason": "overlaps_booked_appointment" }] }
+```
+
+`reason` is `overlaps_existing_slot`, `overlaps_booked_appointment` or `in_past`. A repeated `Idempotency-Key` must return the original result: the client retries POSTs on network errors. Slot ids are deterministic (`doctorAddress:ISO start`), so a republished range is detectable. At most 500 slots go in one request.
+
+**Response:** `{ "published": 28, "batchId": "batch_…", "slots": [ … ] }`
 
 ---
 

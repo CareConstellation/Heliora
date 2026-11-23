@@ -9,8 +9,6 @@ import {
   ShieldCheck,
   Activity,
   AlertTriangle,
-  CheckCircle2,
-  XCircle,
   Clock,
   TrendingUp,
   Search,
@@ -28,7 +26,8 @@ import {
 import dynamic from 'next/dynamic';
 import { KpiSkeleton } from '@/components/ui/KpiSkeleton';
 import { DashboardSkeleton } from '@/components/ui/DashboardSkeleton';
-import { AppointmentSkeleton } from '@/components/ui/AppointmentSkeleton';
+import RoleVerificationQueue from '@/components/auth/RoleVerificationQueue';
+import type { RoleVerificationApplication, RoleVerificationDecisionResult } from '@/types';
 
 const ProtocolConsole = dynamic(() => import('@/components/admin/ProtocolConsole'), { ssr: false });
 const TelemetryPanel = dynamic(() => import('@/components/admin/TelemetryPanel'), { ssr: false });
@@ -36,7 +35,6 @@ const TelemetryPanel = dynamic(() => import('@/components/admin/TelemetryPanel')
 /* ─── Types ─────────────────────────────────────────────────────── */
 type Role = 'PATIENT' | 'DOCTOR' | 'HOSPITAL' | 'ADMIN';
 type AccountStatus = 'active' | 'suspended' | 'pending';
-type ApprovalStatus = 'pending' | 'approved' | 'rejected';
 
 interface PlatformUser {
   id: string;
@@ -46,15 +44,6 @@ interface PlatformUser {
   status: AccountStatus;
   joined: string;
   lastActive: string;
-}
-
-interface RoleRequest {
-  id: string;
-  name: string;
-  address: string;
-  requestedRole: Role;
-  submittedAt: string;
-  credentials?: string;
 }
 
 interface AuditEntry {
@@ -139,33 +128,6 @@ const MOCK_USERS: PlatformUser[] = [
     status: 'active',
     joined: 'Apr 14, 2025',
     lastActive: '1h ago',
-  },
-];
-
-const MOCK_REQUESTS: RoleRequest[] = [
-  {
-    id: 'r1',
-    name: 'Dr. Robert Lee',
-    address: 'GBJQ...1XKM',
-    requestedRole: 'DOCTOR',
-    submittedAt: 'Jun 28, 2025',
-    credentials: 'License #MD-2024-77821',
-  },
-  {
-    id: 'r2',
-    name: 'Harbor Hospital',
-    address: 'GCXP...6WNT',
-    requestedRole: 'HOSPITAL',
-    submittedAt: 'Jun 27, 2025',
-    credentials: 'Reg #HOS-2025-00143',
-  },
-  {
-    id: 'r3',
-    name: 'Dr. Nina Patel',
-    address: 'GHZM...3SQR',
-    requestedRole: 'DOCTOR',
-    submittedAt: 'Jun 26, 2025',
-    credentials: 'License #MD-2021-55290',
   },
 ];
 
@@ -292,7 +254,7 @@ function AdminDashboardContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [users, setUsers] = useState<PlatformUser[]>([]);
-  const [requests, setRequests] = useState<RoleRequest[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<Role | 'ALL'>('ALL');
@@ -307,7 +269,6 @@ function AdminDashboardContent() {
         setLoading(false);
       } else {
         setUsers(MOCK_USERS);
-        setRequests(MOCK_REQUESTS);
         setAudit(MOCK_AUDIT);
         setError(false);
         setLoading(false);
@@ -321,7 +282,6 @@ function AdminDashboardContent() {
   }, [loadData]);
 
   const totalUsers    = users.length;
-  const pendingCount  = requests.length;
   const activeCount   = users.filter(u => u.status === 'active').length;
   const suspendedCount= users.filter(u => u.status === 'suspended').length;
 
@@ -355,39 +315,41 @@ function AdminDashboardContent() {
     );
   }
 
-  function handleApproval(req: RoleRequest, decision: ApprovalStatus) {
-    setRequests((prev) => prev.filter((r) => r.id !== req.id));
-    const action = decision === 'approved' ? 'Role approved' : 'Role rejected';
-    setAudit((prev) => [
-      {
-        id: `a${Date.now()}`,
-        action,
-        actor: 'Admin',
-        target: req.name,
-        timestamp: 'just now',
-        type: decision === 'approved' ? 'approve' : 'reject',
-      },
-      ...prev,
-    ]);
-    if (decision === 'approved') {
-      setUsers((prev) => [
-        ...prev,
+  const handleVerificationDecision = useCallback(
+    (app: RoleVerificationApplication, result: RoleVerificationDecisionResult) => {
+      const approved = result.decision === 'approved';
+      setAudit((prev) => [
         {
-          id: `u${Date.now()}`,
-          name: req.name,
-          address: req.address,
-          role: req.requestedRole,
-          status: 'active',
-          joined: new Date().toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          }),
-          lastActive: 'just now',
+          id: `a${Date.now()}`,
+          action: approved ? 'Role approved' : 'Role rejected',
+          actor: 'Admin',
+          target: app.displayName,
+          timestamp: 'just now',
+          type: approved ? 'approve' : 'reject',
         },
+        ...prev,
       ]);
-    }
-  }
+      if (approved) {
+        setUsers((prev) => [
+          ...prev,
+          {
+            id: `u${Date.now()}`,
+            name: app.displayName,
+            address: app.applicantAddress,
+            role: app.requestedRole,
+            status: 'active',
+            joined: new Date().toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            }),
+            lastActive: 'just now',
+          },
+        ]);
+      }
+    },
+    [],
+  );
 
   const tabs = [
     { id: 'users' as const, label: 'User Management', count: totalUsers },
@@ -659,87 +621,13 @@ function AdminDashboardContent() {
             </>
           )}
 
-          {/* ── Pending Approvals ── */}
-          {activeTab === 'approvals' &&
-            (loading ? (
-              <AppointmentSkeleton rows={3} />
-            ) : (
-              <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-                {requests.length === 0 && (
-                  <div className="px-5 py-10 text-center">
-                    <CheckCircle2 className="w-8 h-8 mx-auto mb-2" style={{ color: '#00C896' }} />
-                    <p className="text-sm font-medium text-text-1">All caught up</p>
-                    <p className="text-xs text-text-3 mt-1">No pending role registrations.</p>
-                  </div>
-                )}
-                {requests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className="w-9 h-9 rounded-[9px] flex items-center justify-center shrink-0 mt-0.5"
-                        style={{
-                          background: roleColors[req.requestedRole],
-                          border: `1px solid ${roleTextColors[req.requestedRole]}30`,
-                        }}
-                      >
-                        <Users
-                          className="w-4 h-4"
-                          style={{ color: roleTextColors[req.requestedRole] }}
-                        />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-text-1">{req.name}</p>
-                        <p className="text-2xs font-mono text-text-3 mt-0.5">{req.address}</p>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className="text-2xs font-semibold px-2 py-0.5 rounded-full"
-                            style={{
-                              background: roleColors[req.requestedRole],
-                              color: roleTextColors[req.requestedRole],
-                            }}
-                          >
-                            {req.requestedRole}
-                          </span>
-                          {req.credentials && (
-                            <span className="text-2xs text-text-3">{req.credentials}</span>
-                          )}
-                          <span className="text-2xs text-text-3">· {req.submittedAt}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => handleApproval(req, 'rejected')}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-xs font-medium transition-colors"
-                        style={{
-                          background: 'rgba(248,113,113,0.1)',
-                          color: '#F87171',
-                          border: '1px solid rgba(248,113,113,0.2)',
-                        }}
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        Reject
-                      </button>
-                      <button
-                        onClick={() => handleApproval(req, 'approved')}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] text-xs font-medium transition-colors"
-                        style={{
-                          background: 'rgba(0,200,150,0.1)',
-                          color: '#00C896',
-                          border: '1px solid rgba(0,200,150,0.2)',
-                        }}
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Approve
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
+          {/* ── Pending Approvals: credential verification queue (#145) ── */}
+          {activeTab === 'approvals' && (
+            <RoleVerificationQueue
+              onDecision={handleVerificationDecision}
+              onCountChange={setPendingCount}
+            />
+          )}
 
           {/* ── Audit Log ── */}
           {activeTab === 'audit' && (
