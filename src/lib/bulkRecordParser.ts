@@ -1,6 +1,19 @@
 import type { BulkRecordImportRow, MedicalRecord } from '@/types';
 import { validateFHIRBundle } from '@/lib/fhirValidator';
+import { containsMarkupPayload, sanitizeText } from '@/lib/svgSanitizer';
 import { bulkImportRecords, rollbackBatchRecords } from '@/services/api.service';
+
+/** Applies the strict SVG/text profile to every free-text field before it leaves the client. */
+function sanitizedRow(row: BulkRecordImportRow): BulkRecordImportRow {
+  const clean: BulkRecordImportRow = {
+    date: sanitizeText(row.date),
+    doctorName: sanitizeText(row.doctorName),
+    diagnosis: sanitizeText(row.diagnosis),
+  };
+  if (row.prescription !== undefined) clean.prescription = sanitizeText(row.prescription);
+  if (row.notes !== undefined) clean.notes = sanitizeText(row.notes);
+  return clean;
+}
 
 /**
  * Robust RFC 4180 CSV parser supporting quoted cells with commas, newlines, and escaped quotes.
@@ -104,18 +117,20 @@ export function parseFHIR(json: Record<string, unknown>): BulkRecordImportRow[] 
     )?.[0]?.display as string | undefined;
 
     const row: BulkRecordImportRow = {
-      date: (resource.date as string) || (resource.effectiveDateTime as string) || '',
-      doctorName:
+      date: sanitizeText((resource.date as string) || (resource.effectiveDateTime as string) || ''),
+      doctorName: sanitizeText(
         ((resource.performer as Array<Record<string, unknown>> | undefined)?.[0]?.display as string) || '',
-      diagnosis:
+      ),
+      diagnosis: sanitizeText(
         codeText ||
-        ((resource.reasonCode as Array<Record<string, unknown>> | undefined)?.[0]?.text as string) ||
-        '',
+          ((resource.reasonCode as Array<Record<string, unknown>> | undefined)?.[0]?.text as string) ||
+          '',
+      ),
     };
 
     const notesList = resource.note as Array<Record<string, unknown>> | undefined;
     if (notesList?.[0]?.text) {
-      row.notes = notesList[0].text as string;
+      row.notes = sanitizeText(notesList[0].text as string);
     }
 
     return row;
@@ -168,10 +183,13 @@ export function validateRow(row: BulkRecordImportRow, idx: number): PreviewRow {
     errors.push('Missing diagnosis');
   }
 
-  // OWASP CSV Injection check
+  // OWASP CSV Injection and embedded SVG/HTML markup checks
   for (const [field, value] of Object.entries(row)) {
     if (typeof value === 'string' && FORMULA_PREFIX.test(value)) {
       errors.push(`Possible spreadsheet formula (macro) in ${field}`);
+    }
+    if (typeof value === 'string' && containsMarkupPayload(value)) {
+      errors.push(`Embedded SVG/HTML payload in ${field}`);
     }
   }
 
@@ -273,7 +291,7 @@ export async function executeBatchImportWithRollback(
 
       const chunk = chunks[i];
       if (!chunk) continue;
-      const res = await bulkImportRecords(patientAddress, chunk);
+      const res = await bulkImportRecords(patientAddress, chunk.map(sanitizedRow));
       if (res.errors && res.errors.length > 0 && res.imported === 0) {
         throw new Error(`Chunk ${i + 1} failed: ${res.errors[0]?.message || 'Server rejected batch chunk'}`);
       }
@@ -314,15 +332,18 @@ export function validateFHIRJSON(json: Record<string, unknown>): { valid: boolea
 }
 
 export function rowsToMedicalRecords(rows: BulkRecordImportRow[], patientAddress: string): MedicalRecord[] {
-  return rows.map((row, idx) => ({
-    id: `record-${Date.now()}-${idx}`,
-    date: row.date,
-    doctorName: row.doctorName,
-    diagnosis: row.diagnosis,
-    ...(row.prescription !== undefined ? { prescription: row.prescription } : {}),
-    ...(row.notes !== undefined ? { notes: row.notes } : {}),
-    patientAddress,
-  }));
+  return rows.map((row, idx) => {
+    const clean = sanitizedRow(row);
+    return {
+      id: `record-${Date.now()}-${idx}`,
+      date: clean.date,
+      doctorName: clean.doctorName,
+      diagnosis: clean.diagnosis,
+      ...(clean.prescription !== undefined ? { prescription: clean.prescription } : {}),
+      ...(clean.notes !== undefined ? { notes: clean.notes } : {}),
+      patientAddress,
+    };
+  });
 }
 
 
