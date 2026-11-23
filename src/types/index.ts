@@ -514,3 +514,117 @@ export interface InsuranceClaimRecord {
     settledOnChain: boolean;
   };
 }
+
+/* ─── Admin role verification queue (#145) ───────────────────────── */
+
+export type VerifiableRole = 'DOCTOR' | 'HOSPITAL';
+
+export interface CredentialDocument {
+  id: string;
+  fileName: string;
+  /** Credential category, e.g. medical board certificate or hospital registration. */
+  kind: 'medical_license' | 'board_certificate' | 'hospital_registration' | 'identity' | 'other';
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt: string;
+}
+
+export interface RoleVerificationApplication {
+  id: string;
+  applicantAddress: string;
+  displayName: string;
+  email: string;
+  requestedRole: VerifiableRole;
+  submittedAt: string;
+  licenseNumber?: string;
+  issuingAuthority?: string;
+  jurisdiction?: string;
+  licenseExpiresAt?: string;
+  specialty?: string;
+  organization?: string;
+  documents: CredentialDocument[];
+}
+
+export type RejectionReasonCode =
+  | 'LICENSE_UNVERIFIABLE'
+  | 'LICENSE_EXPIRED'
+  | 'DOCUMENT_ILLEGIBLE'
+  | 'NAME_MISMATCH'
+  | 'JURISDICTION_UNSUPPORTED'
+  | 'INCOMPLETE_SUBMISSION'
+  | 'SUSPECTED_FRAUD'
+  | 'OTHER';
+
+export type RoleVerificationDecisionPayload =
+  | { decision: 'approved'; grantTxHash: string; reviewerAddress: string }
+  | {
+      decision: 'rejected';
+      reasonCode: RejectionReasonCode;
+      note?: string;
+      reviewerAddress: string;
+    };
+
+export interface NotificationDispatch {
+  channel: 'email';
+  status: 'queued' | 'sent' | 'failed';
+  dispatchedAt?: string;
+  error?: string;
+}
+
+export interface RoleVerificationDecisionResult {
+  applicationId: string;
+  decision: 'approved' | 'rejected';
+  decidedAt: string;
+  notification: NotificationDispatch;
+}
+
+/* ─── Doctor schedule templates (#143) ───────────────────────────── */
+
+/** 0 = Monday … 6 = Sunday. */
+export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+/** A recurring working-hours block, in minutes after local midnight. */
+export interface WeeklyHoursBlock {
+  id: string;
+  day: Weekday;
+  startMinute: number;
+  endMinute: number;
+}
+
+export interface ScheduleTemplate {
+  id: string;
+  name: string;
+  slotMinutes: number;
+  blocks: WeeklyHoursBlock[];
+}
+
+export type DateOverrideKind = 'holiday' | 'conference' | 'custom';
+
+export interface DateOverride {
+  /** Local calendar date, `YYYY-MM-DD`. */
+  date: string;
+  kind: DateOverrideKind;
+  label: string;
+  /** Replacement hours for `custom`; ignored for `holiday`/`conference` (day off). */
+  blocks?: Array<Pick<WeeklyHoursBlock, 'startMinute' | 'endMinute'>>;
+}
+
+export interface DoctorScheduleSettings {
+  templates: ScheduleTemplate[];
+  activeTemplateId: string | null;
+  overrides: DateOverride[];
+  /** Optimistic-concurrency version from the backend. */
+  version?: number;
+}
+
+export interface SlotConflict {
+  slotId: string;
+  datetime: string;
+  reason: 'overlaps_existing_slot' | 'overlaps_booked_appointment' | 'in_past' | string;
+}
+
+export interface BulkSlotPublishResult {
+  published: number;
+  slots: TimeSlot[];
+  batchId: string;
+}

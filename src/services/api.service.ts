@@ -1,6 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial } from '@/types';
+import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial, RoleVerificationApplication, RoleVerificationDecisionPayload, RoleVerificationDecisionResult, NotificationDispatch, DoctorScheduleSettings, BulkSlotPublishResult, SlotConflict } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
 /**
@@ -566,3 +566,106 @@ export const cancelAppointmentWithPenalty = (appointmentId: string, confirm: boo
   api
     .post<Appointment>(`/appointments/${appointmentId}/cancel-with-penalty`, { confirm })
     .then((r) => r.data);
+
+// Admin role verification queue (#145)
+
+/**
+ * Fetch DOCTOR/HOSPITAL applications awaiting credential review.
+ * @returns Pending {@link RoleVerificationApplication}s, oldest first.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchRoleVerificationQueue = () =>
+  api
+    .get<RoleVerificationApplication[]>('/admin/role-verifications', {
+      params: { status: 'pending' },
+    })
+    .then((r) => r.data);
+
+/**
+ * Download an applicant's credential document as a Blob. Documents are never
+ * exposed through public URLs; they are streamed through the authenticated API.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchCredentialDocument = (applicationId: string, documentId: string) =>
+  api
+    .get<Blob>(`/admin/role-verifications/${applicationId}/documents/${documentId}`, {
+      responseType: 'blob',
+    })
+    .then((r) => r.data);
+
+/**
+ * Record an approve/reject decision. The backend persists the decision, writes the
+ * audit entry and dispatches the decision email to the applicant; the dispatch
+ * status is returned so the reviewer can see whether the email went out.
+ * @throws {ApiError} On network failure or non-2xx response (409 if already decided).
+ */
+export const submitRoleVerificationDecision = (
+  applicationId: string,
+  payload: RoleVerificationDecisionPayload,
+) =>
+  api
+    .post<RoleVerificationDecisionResult>(
+      `/admin/role-verifications/${applicationId}/decision`,
+      payload,
+    )
+    .then((r) => r.data);
+
+/**
+ * Re-send the decision email when the original dispatch failed.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const resendRoleVerificationNotification = (applicationId: string) =>
+  api
+    .post<NotificationDispatch>(`/admin/role-verifications/${applicationId}/notify`)
+    .then((r) => r.data);
+
+// Doctor schedule templates (#143)
+
+/**
+ * Fetch a doctor's schedule templates, active template and date overrides.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const fetchScheduleSettings = (doctorAddress: string) =>
+  api
+    .get<DoctorScheduleSettings>('/doctors/schedule-templates', { params: { doctorAddress } })
+    .then((r) => r.data);
+
+/**
+ * Save templates and overrides. `version` enables optimistic concurrency: the
+ * backend answers 409 if another session saved in the meantime.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const saveScheduleSettings = (doctorAddress: string, settings: DoctorScheduleSettings) =>
+  api
+    .put<DoctorScheduleSettings>('/doctors/schedule-templates', { doctorAddress, ...settings })
+    .then((r) => r.data);
+
+/**
+ * Publish generated slots in one all-or-nothing batch. The backend verifies every
+ * slot against existing slots and booked appointments inside a single transaction;
+ * if any conflicts, nothing is written and it answers 409 with `{ conflicts }`.
+ *
+ * `idempotencyKey` makes the request safe to retry: axios-retry re-sends POSTs on
+ * network errors, and the backend must return the original result for a repeated key.
+ * @throws {ApiError} On network failure or non-2xx response.
+ */
+export const publishSlotsBulk = (
+  doctorAddress: string,
+  slots: TimeSlot[],
+  idempotencyKey: string,
+) =>
+  api
+    .post<BulkSlotPublishResult>(
+      '/doctors/slots/bulk',
+      { doctorAddress, slots, atomic: true },
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    )
+    .then((r) => r.data);
+
+/** Extracts `{ conflicts }` from a 409 bulk-publish error, if present. */
+export function getSlotConflicts(error: unknown): SlotConflict[] | null {
+  const apiError = error as Partial<ApiError> | undefined;
+  if (apiError?.status !== 409) return null;
+  const conflicts = (apiError.data as { conflicts?: unknown } | null)?.conflicts;
+  return Array.isArray(conflicts) ? (conflicts as SlotConflict[]) : [];
+}
