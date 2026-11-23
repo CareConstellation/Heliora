@@ -113,13 +113,13 @@ export interface IntakeQuestion {
   placeholder?: string;
 }
 
-export type EligibilityKind = 'age18' | 'insurance';
-
+export type EligibilityKind = 'age18' | 'insurance' | 'vaccination';
 
 export interface EligibilityProofToken {
   kind: EligibilityKind;
   proof: unknown;
   publicSignals: string[];
+  nullifier?: string;
 }
 
 export interface NewRecordPayload {
@@ -247,6 +247,7 @@ export interface BulkImportResponse {
 export interface EligibilityCommitments {
   age18?: string;
   insurance?: string;
+  vaccination?: string;
 }
 
 /** Normalised pinning state reported by the backend for a record ciphertext. */
