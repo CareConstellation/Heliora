@@ -1,9 +1,64 @@
 import { withSentryConfig } from '@sentry/nextjs';
 import withBundleAnalyzer from '@next/bundle-analyzer';
+import withPWAInit from 'next-pwa';
 
 const withAnalyzer = withBundleAnalyzer({
   enabled: process.env.ANALYZE === 'true',
   openAnalyzer: false,
+});
+
+const withPWA = withPWAInit({
+  dest: 'public',
+  disable: process.env.NODE_ENV === 'development',
+  register: true,
+  skipWaiting: true,
+  sw: 'service-worker.js',
+  runtimeCaching: [
+    {
+      urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,
+      handler: 'CacheFirst',
+      options: {
+        cacheName: 'heliora-fonts-v1',
+        expiration: {
+          maxEntries: 10,
+          maxAgeSeconds: 365 * 24 * 60 * 60,
+        },
+      },
+    },
+    {
+      urlPattern: /\.(?:eot|otf|ttc|ttf|woff|woff2|font.css)$/i,
+      handler: 'CacheFirst',
+      options: {
+        cacheName: 'heliora-fonts-v1',
+        expiration: {
+          maxEntries: 20,
+          maxAgeSeconds: 365 * 24 * 60 * 60,
+        },
+      },
+    },
+    {
+      urlPattern: /\/_next\/static\/.*/i,
+      handler: 'CacheFirst',
+      options: {
+        cacheName: 'heliora-static-v1',
+        expiration: {
+          maxEntries: 64,
+          maxAgeSeconds: 30 * 24 * 60 * 60,
+        },
+      },
+    },
+    {
+      urlPattern: /^\/(?:login|dashboard|appointments)?$/i,
+      handler: 'StaleWhileRevalidate',
+      options: {
+        cacheName: 'heliora-shell-v1',
+        expiration: {
+          maxEntries: 32,
+          maxAgeSeconds: 24 * 60 * 60,
+        },
+      },
+    },
+  ],
 });
 
 /** @type {import('next').NextConfig} */
@@ -58,6 +113,21 @@ const nextConfig = {
   async headers() {
     return [
       {
+        source: '/manifest.json',
+        headers: [
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+          { key: 'Content-Type', value: 'application/manifest+json' },
+          { key: 'Cache-Control', value: 'public, max-age=86400' },
+        ],
+      },
+      {
+        source: '/service-worker.js',
+        headers: [
+          { key: 'Service-Worker-Allowed', value: '/' },
+          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+        ],
+      },
+      {
         source: '/:path*',
         headers: [
           { key: 'X-Frame-Options', value: 'DENY' },
@@ -72,7 +142,7 @@ const nextConfig = {
   },
 };
 
-export default withSentryConfig(withAnalyzer(nextConfig), {
+export default withSentryConfig(withAnalyzer(withPWA(nextConfig)), {
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   authToken: process.env.SENTRY_AUTH_TOKEN,

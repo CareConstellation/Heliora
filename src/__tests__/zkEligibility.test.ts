@@ -11,6 +11,7 @@ import {
   policyIdFromNumber,
   utcDateInt,
   verifyEligibilityProof,
+  verifyPrescriptionDosage,
 } from '@/lib/zkEligibility';
 import type { EligibilityProofToken } from '@/types';
 
@@ -59,6 +60,18 @@ describe('parseCredential', () => {
         '{"type":"insurance","policyNumber":"P-1","expiryDate":"2027-12-31","salt":"1","commitment":"2"}',
       ),
     ).toMatchObject({ type: 'insurance', policyNumber: 'P-1' });
+    expect(
+      parseCredential(
+        '{"type":"dosage","patientWeight":70,"dosage":500,"safeThreshold":20,"salt":"123","commitment":"456"}',
+      ),
+    ).toEqual({
+      type: 'dosage',
+      patientWeight: 70,
+      dosage: 500,
+      safeThreshold: 20,
+      salt: '123',
+      commitment: '456',
+    });
   });
 
   it.each([
@@ -130,5 +143,64 @@ describe('verifyEligibilityProof (#27)', () => {
     await expect(
       verifyEligibilityProof(ins.token, ins.commitment, nextDay, insuranceVkey),
     ).resolves.toBe(false);
+  });
+});
+
+describe('ZK Prescription Dosage Boundary Check (#214)', () => {
+  describe('verifyPrescriptionDosage mathematical boundary tests', () => {
+    it('accepts dosage strictly less than patientWeight * safeThreshold', () => {
+      // 500mg < 70kg * 20mg/kg (1400mg)
+      expect(verifyPrescriptionDosage(500, 70, 20)).toBe(true);
+    });
+
+    it('accepts dosage exactly equal to the boundary (patientWeight * safeThreshold)', () => {
+      // Exact boundary: 1400mg == 70kg * 20mg/kg
+      expect(verifyPrescriptionDosage(1400, 70, 20)).toBe(true);
+
+      // Pediatric boundary: 500mg == 25kg * 20mg/kg
+      expect(verifyPrescriptionDosage(500, 25, 20)).toBe(true);
+    });
+
+    it('rejects dosage strictly greater than the boundary (patientWeight * safeThreshold)', () => {
+      // 1401mg > 70kg * 20mg/kg (1400mg)
+      expect(verifyPrescriptionDosage(1401, 70, 20)).toBe(false);
+
+      // 501mg > 25kg * 20mg/kg (500mg)
+      expect(verifyPrescriptionDosage(501, 25, 20)).toBe(false);
+
+      // Gross overdose: 5000mg for 50kg patient with 10mg/kg limit
+      expect(verifyPrescriptionDosage(5000, 50, 10)).toBe(false);
+    });
+
+    it('rejects invalid or non-positive numerical values', () => {
+      expect(verifyPrescriptionDosage(0, 70, 20)).toBe(false);
+      expect(verifyPrescriptionDosage(-500, 70, 20)).toBe(false);
+      expect(verifyPrescriptionDosage(500, 0, 20)).toBe(false);
+      expect(verifyPrescriptionDosage(500, -70, 20)).toBe(false);
+      expect(verifyPrescriptionDosage(500, 70, 0)).toBe(false);
+      expect(verifyPrescriptionDosage(500, 70, -20)).toBe(false);
+    });
+  });
+
+  describe('verifyEligibilityProof for dosage token', () => {
+    const mockDosageToken: EligibilityProofToken = {
+      kind: 'dosage',
+      proof: { pi_a: ['1', '2'], pi_b: [['3', '4'], ['5', '6']], pi_c: ['7', '8'], protocol: 'groth16' },
+      publicSignals: ['500', '20', '1234567890'], // [dosage, safeThreshold, commitment]
+    };
+
+    it('rejects dosage proof with mismatched commitment', async () => {
+      const isValid = await verifyEligibilityProof(mockDosageToken, 'different_commitment');
+      expect(isValid).toBe(false);
+    });
+
+    it('rejects dosage proof with invalid public signals count', async () => {
+      const invalidToken: EligibilityProofToken = {
+        ...mockDosageToken,
+        publicSignals: ['500', '1234567890'], // missing threshold signal
+      };
+      const isValid = await verifyEligibilityProof(invalidToken, '1234567890');
+      expect(isValid).toBe(false);
+    });
   });
 });

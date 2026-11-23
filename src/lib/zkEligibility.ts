@@ -14,6 +14,7 @@ export const MIN_CONSULTATION_AGE = 18;
 const CIRCUITS: Record<EligibilityKind, string> = {
   age18: 'age_eligibility',
   insurance: 'insurance_coverage',
+  dosage: 'prescription_dosage',
 };
 
 /** Base URL serving `<circuit>.wasm`, `<circuit>.zkey` and `<circuit>.vkey.json` from the trusted setup. */
@@ -36,7 +37,17 @@ export interface InsuranceCredential {
   commitment: string;
 }
 
-export type EligibilityCredential = AgeCredential | InsuranceCredential;
+/** Attested patient weight credential for ZK dosage boundary check (#214). */
+export interface PrescriptionDosageCredential {
+  type: 'dosage';
+  patientWeight: number; // private: patient weight in kg
+  dosage: number;        // public: prescribed dosage in mg
+  safeThreshold: number; // public: safe limit in mg/kg
+  salt: string;
+  commitment: string;    // public: Poseidon(patientWeight, salt)
+}
+
+export type EligibilityCredential = AgeCredential | InsuranceCredential | PrescriptionDosageCredential;
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const FIELD_ELEMENT = /^\d{1,78}$/;
@@ -74,17 +85,45 @@ export function parseCredential(json: string): EligibilityCredential {
     const v = c[key];
     return typeof v === 'string' && v.length > 0 && (!pattern || pattern.test(v)) ? v : null;
   };
+  const num = (key: string) => {
+    const v = c[key];
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+  };
   const salt = text('salt', FIELD_ELEMENT);
   const commitment = text('commitment', FIELD_ELEMENT);
   const birthDate = text('birthDate', ISO_DATE);
   const policyNumber = text('policyNumber');
   const expiryDate = text('expiryDate', ISO_DATE);
+  const patientWeight = num('patientWeight');
+  const dosage = num('dosage');
+  const safeThreshold = num('safeThreshold');
+
   if (salt && commitment && c.type === 'age' && birthDate)
     return { type: 'age', birthDate, salt, commitment };
   if (salt && commitment && c.type === 'insurance' && policyNumber && expiryDate) {
     return { type: 'insurance', policyNumber, expiryDate, salt, commitment };
   }
+  if (salt && commitment && c.type === 'dosage' && patientWeight && dosage && safeThreshold) {
+    return { type: 'dosage', patientWeight, dosage, safeThreshold, salt, commitment };
+  }
   throw new Error('Unrecognised eligibility credential.');
+}
+
+/**
+ * Validates that prescribed dosage does not exceed patientWeight * safeThreshold.
+ * Pure mathematical boundary check.
+ * Time: O(1)
+ * Space: O(1)
+ */
+export function verifyPrescriptionDosage(
+  dosage: number,
+  patientWeight: number,
+  safeThreshold: number,
+): boolean {
+  if (dosage <= 0 || patientWeight <= 0 || safeThreshold <= 0) {
+    return false;
+  }
+  return dosage <= patientWeight * safeThreshold;
 }
 
 const artifact = (
@@ -95,30 +134,47 @@ const artifact = (
 
 /**
  * Generates a proof in the browser. Witness generation fails when the claim is
- * false (too young, policy expired) or the credential doesn't match its commitment.
- * Cost: one Groth16 prove over ~700 constraints, about a second on a laptop.
+ * false (too young, policy expired, or dosage exceeds safe threshold) or the credential
+ * doesn't match its commitment.
  */
 export async function generateEligibilityProof(
   credential: EligibilityCredential,
   now = new Date(),
   artifactsUrl = ARTIFACTS_URL,
 ): Promise<EligibilityProofToken> {
-  const kind: EligibilityKind = credential.type === 'age' ? 'age18' : 'insurance';
-  const input =
+  const kind: EligibilityKind =
     credential.type === 'age'
-      ? {
-          birthDate: parseDate(credential.birthDate),
-          salt: credential.salt,
-          cutoffDate: ageCutoff(now),
-          commitment: credential.commitment,
-        }
-      : {
-          policyId: await policyIdFromNumber(credential.policyNumber),
-          expiryDate: parseDate(credential.expiryDate),
-          salt: credential.salt,
-          currentDate: utcDateInt(now),
-          commitment: credential.commitment,
-        };
+      ? 'age18'
+      : credential.type === 'insurance'
+        ? 'insurance'
+        : 'dosage';
+
+  let input: Record<string, unknown>;
+  if (credential.type === 'age') {
+    input = {
+      birthDate: parseDate(credential.birthDate),
+      salt: credential.salt,
+      cutoffDate: ageCutoff(now),
+      commitment: credential.commitment,
+    };
+  } else if (credential.type === 'insurance') {
+    input = {
+      policyId: await policyIdFromNumber(credential.policyNumber),
+      expiryDate: parseDate(credential.expiryDate),
+      salt: credential.salt,
+      currentDate: utcDateInt(now),
+      commitment: credential.commitment,
+    };
+  } else {
+    input = {
+      patientWeight: credential.patientWeight,
+      salt: credential.salt,
+      dosage: credential.dosage,
+      safeThreshold: credential.safeThreshold,
+      commitment: credential.commitment,
+    };
+  }
+
   const { groth16 } = await import('snarkjs');
   try {
     const { proof, publicSignals } = await groth16.fullProve(
@@ -128,13 +184,14 @@ export async function generateEligibilityProof(
     );
     return { kind, proof, publicSignals };
   } catch (err) {
-    // The witness calculator reports a false claim as "Assert Failed"; anything else (e.g. artifacts not reachable) is rethrown.
     if (!String((err as Error)?.message ?? err).includes('Assert Failed')) throw err;
-    throw new Error(
-      kind === 'age18'
-        ? `This credential does not prove you are ${MIN_CONSULTATION_AGE} or older.`
-        : 'This credential does not prove active insurance coverage.',
-    );
+    if (kind === 'age18') {
+      throw new Error(`This credential does not prove you are ${MIN_CONSULTATION_AGE} or older.`);
+    }
+    if (kind === 'insurance') {
+      throw new Error('This credential does not prove active insurance coverage.');
+    }
+    throw new Error('Prescribed dosage exceeds safe weight-adjusted boundary.');
   }
 }
 
@@ -154,10 +211,9 @@ function loadVerificationKey(url: string): Promise<object> {
 }
 
 /**
- * Verifies a proof token against the public verification key. It also checks
- * that its public signals state the required claim: the date is the age cutoff
- * (or earlier) or today (or later), and the commitment is the one the issuer
- * registered for this patient.
+ * Verifies a proof token against the public verification key.
+ * For dosage proofs, it checks that the public commitment matches and that
+ * the verified public dosage signal satisfies the safety boundary.
  */
 export async function verifyEligibilityProof(
   token: EligibilityProofToken,
@@ -165,6 +221,22 @@ export async function verifyEligibilityProof(
   now = new Date(),
   verificationKey?: object,
 ): Promise<boolean> {
+  if (token.kind === 'dosage') {
+    // Public signals: [dosage, safeThreshold, commitment]
+    const [dosage, safeThreshold, commitment] = token.publicSignals;
+    if (
+      token.publicSignals.length !== 3 ||
+      dosage === undefined ||
+      safeThreshold === undefined ||
+      commitment !== expectedCommitment
+    ) {
+      return false;
+    }
+    const vkey = verificationKey ?? (await loadVerificationKey(artifact('dosage', 'vkey.json')));
+    const { groth16 } = await import('snarkjs');
+    return groth16.verify(vkey, token.publicSignals, token.proof as Parameters<typeof groth16.verify>[2]);
+  }
+
   const [date, commitment] = token.publicSignals;
   if (token.publicSignals.length !== 2 || date === undefined || commitment !== expectedCommitment)
     return false;

@@ -113,7 +113,7 @@ export interface IntakeQuestion {
   placeholder?: string;
 }
 
-export type EligibilityKind = 'age18' | 'insurance';
+export type EligibilityKind = 'age18' | 'insurance' | 'dosage';
 
 
 export interface EligibilityProofToken {
