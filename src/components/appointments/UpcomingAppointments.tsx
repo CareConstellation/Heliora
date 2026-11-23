@@ -1,12 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  fetchAppointments,
-  cancelAppointmentWithPenalty,
-  type ApiError,
-} from '@/services/api.service';
+import { useQuery } from '@tanstack/react-query';
+import { fetchAppointments } from '@/services/api.service';
+import { useCancelAppointmentMutation } from '@/services/appointmentMutations';
 import { useWalletStore } from '@/store/useWalletStore';
 import { isVideoLinkActive } from '@/lib/video';
 import { useToast } from '@/hooks/useToast';
@@ -19,13 +16,8 @@ import type { Appointment } from '@/types';
 
 type AppointmentTab = 'upcoming' | 'canceled';
 
-interface CancelMutationContext {
-  previousAppointments: Appointment[] | undefined;
-}
-
 export default function UpcomingAppointments() {
   const { publicKey } = useWalletStore();
-  const queryClient = useQueryClient();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<AppointmentTab>('upcoming');
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
@@ -41,49 +33,23 @@ export default function UpcomingAppointments() {
     enabled: !!publicKey,
   });
 
-  const cancelMutation = useMutation<Appointment, ApiError, Appointment, CancelMutationContext>({
-    mutationFn: (appointment) => cancelAppointmentWithPenalty(appointment.id, true),
-    onMutate: async (appointment) => {
-      // Stop in-flight refetches so they cannot overwrite the optimistic update.
-      await queryClient.cancelQueries({ queryKey: appointmentsQueryKey });
-
-      // Snapshot the previous list so onError can restore it exactly.
-      const previousAppointments = queryClient.getQueryData<Appointment[]>(appointmentsQueryKey);
-
-      queryClient.setQueryData<Appointment[]>(appointmentsQueryKey, (current) =>
-        current?.map((item) =>
-          item.id === appointment.id ? { ...item, status: 'cancelled' as const } : item,
-        ),
-      );
-
+  const cancelMutation = useCancelAppointmentMutation({
+    queryKey: appointmentsQueryKey,
+    onOptimisticCancel: () => {
       // Move the appointment to the Canceled tab immediately, before the request resolves.
       setAppointmentToCancel(null);
       setActiveTab('canceled');
-
-      return { previousAppointments };
     },
-    onError: (error, appointment, context) => {
-      // Roll the cache back to the pre-mutation snapshot.
-      if (context?.previousAppointments) {
-        queryClient.setQueryData(appointmentsQueryKey, context.previousAppointments);
-      } else {
-        void queryClient.invalidateQueries({ queryKey: appointmentsQueryKey });
-      }
-
+    onRollback: (appointment, explanation, retry) => {
       setActiveTab('upcoming');
       toast(
-        `Could not cancel your appointment with Dr. ${appointment.doctorName}. Your appointment was restored. ${
-          error.message || 'Please try again.'
-        }`,
+        `Could not cancel your appointment with Dr. ${appointment.doctorName}. ${explanation} Your appointment was restored.`,
         'error',
-        { label: 'Retry', onClick: () => cancelMutation.mutate(appointment) },
+        { label: 'Retry', onClick: retry },
       );
     },
-    onSuccess: () => {
+    onCancelled: () => {
       toast('Appointment cancelled', 'success');
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: appointmentsQueryKey });
     },
   });
 

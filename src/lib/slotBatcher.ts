@@ -130,7 +130,7 @@ async function submitSlotWithRetry(
         nativeToScVal(item.slot.datetime, { type: 'string' }),
         nativeToScVal(item.slot.slotType ?? 'regular', { type: 'string' }),
       );
-      return await invokeSorobanContract(source, operation, signer);
+      return await invokeSorobanContract(source, operation, signer, 'soroban.initialize_slot');
     } catch (err) {
       if (attempt < RETRY_LIMIT - 1) {
         const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
