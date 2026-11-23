@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { StrKey } from '@stellar/stellar-sdk';
 import { CheckCircle2, FileSignature, Loader2, UserCheck } from 'lucide-react';
+import FederationHint from '@/components/contacts/FederationHint';
+import { resolveInputAddress } from '@/lib/federationInput';
 import { createSupervisorCosignature } from '@/lib/delegatedProxy';
 import { freighterMessageSigner, type MessageSigner } from '@/lib/stellar';
 import {
@@ -51,12 +52,14 @@ export default function ResidentSupervision({
   const startMutation = useMutation({
     mutationFn: async (resident: string) => {
       if (!publicKey) throw new Error('Connect your wallet to supervise a resident.');
-      if (!StrKey.isValidEd25519PublicKey(resident)) {
-        throw new Error('Enter the resident’s Stellar address (G…).');
+      const resolution = await resolveInputAddress(resident);
+      if (!resolution) {
+        throw new Error('Enter the resident’s Stellar address (G… or name*domain).');
       }
-      if (resident === publicKey) throw new Error('You cannot supervise your own account.');
-      const token = await requestDelegatedProxyToken(publicKey, resident);
-      if (token.supervisorAddress !== publicKey || token.residentAddress !== resident) {
+      const residentKey = resolution.publicKey;
+      if (residentKey === publicKey) throw new Error('You cannot supervise your own account.');
+      const token = await requestDelegatedProxyToken(publicKey, residentKey);
+      if (token.supervisorAddress !== publicKey || token.residentAddress !== residentKey) {
         throw new Error('The proxy token was issued for different accounts.');
       }
       if (!enterProxyMode(token)) throw new Error('The proxy token is already expired.');
@@ -124,11 +127,12 @@ export default function ResidentSupervision({
             id="resident-address"
             value={residentAddress}
             onChange={(e) => setResidentAddress(e.target.value)}
-            placeholder="Resident Stellar address (G…)"
+            placeholder="Resident Stellar address (G… or name*domain)"
             spellCheck={false}
             className="flex-1 rounded-[9px] px-3 py-2 text-xs font-mono text-text-1"
             style={{ background: 'var(--bg-inset)', border: '1px solid rgba(255,255,255,0.08)' }}
           />
+          <FederationHint value={residentAddress} />
           <button
             type="submit"
             disabled={!residentAddress.trim() || startMutation.isPending}

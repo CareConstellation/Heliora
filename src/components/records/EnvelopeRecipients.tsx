@@ -19,7 +19,7 @@ import {
 import { useToast } from '@/hooks/useToast';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useContactResolver } from '@/hooks/useAddressBook';
-import { resolveAddressInput } from '@/lib/addressBook';
+import { resolveInputAddress } from '@/lib/federationInput';
 import ContactAddressInput from '@/components/contacts/ContactAddressInput';
 import ResolvedAddress from '@/components/contacts/ResolvedAddress';
 
@@ -123,7 +123,17 @@ export default function EnvelopeRecipients({ recordId }: Props) {
         className="flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          addMutation.mutate(resolveAddressInput(address, contacts) ?? address.trim());
+          void (async () => {
+            const resolution = await resolveInputAddress(address, contacts);
+            if (!resolution) {
+              toast(
+                'Enter a valid Stellar address, federated address or trusted contact.',
+                'error',
+              );
+              return;
+            }
+            addMutation.mutate(resolution.publicKey);
+          })();
         }}
       >
         <ContactAddressInput

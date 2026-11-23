@@ -1,8 +1,11 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { StrKey } from '@stellar/stellar-sdk';
 import { BadgeCheck } from 'lucide-react';
 import { useContactResolver } from '@/hooks/useAddressBook';
 import { contactDisplayName } from '@/lib/addressBook';
+import { lookupFederationByAccount } from '@/lib/stellar';
 
 const shorten = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
@@ -22,11 +25,26 @@ export default function ResolvedAddress({
 }) {
   const { resolve } = useContactResolver();
   const contact = resolve(address);
+  const [federatedAddress, setFederatedAddress] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setFederatedAddress(null);
+    if (!StrKey.isValidEd25519PublicKey(address)) return;
+    lookupFederationByAccount(address)
+      .then((result) => {
+        if (active) setFederatedAddress(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [address]);
 
   if (!contact) {
     return (
       <span className={`font-mono ${className}`} title={address}>
-        {fallback ?? shorten(address)}
+        {federatedAddress ?? fallback ?? shorten(address)}
       </span>
     );
   }
