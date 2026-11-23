@@ -39,6 +39,7 @@
  */
 
 import { captureMessage } from '@/lib/sentry';
+import { zeroMemory } from '@/lib/zeroMemory';
 
 export class CryptographicFaultError extends Error {
   constructor(message: string) {
@@ -266,13 +267,14 @@ async function deriveBackupKey(
   salt: Uint8Array<ArrayBuffer>,
   iterations: number,
 ): Promise<CryptoKey> {
-  const material = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(passphrase.normalize('NFKD')),
-    'PBKDF2',
-    false,
-    ['deriveKey'],
-  );
+  // The encoded passphrase is key material: wipe it as soon as it is imported.
+  const passphraseBytes = new TextEncoder().encode(passphrase.normalize('NFKD'));
+  let material: CryptoKey;
+  try {
+    material = await crypto.subtle.importKey('raw', passphraseBytes, 'PBKDF2', false, ['deriveKey']);
+  } finally {
+    zeroMemory(passphraseBytes);
+  }
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
     material,
