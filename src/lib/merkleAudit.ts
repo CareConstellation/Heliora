@@ -98,8 +98,29 @@ export interface MerkleTree {
   layers: Uint8Array[][];
 }
 
+export class AppendOnlyMerkleAuditLog {
+  private readonly events: AuditEvent[] = [];
+
+  get size(): number {
+    return this.events.length;
+  }
+
+  getEntries(): AuditEvent[] {
+    return [...this.events];
+  }
+
+  async append(event: AuditEvent): Promise<MerkleTree> {
+    this.events.push(event);
+    return buildMerkleTree(this.events);
+  }
+
+  async buildTree(): Promise<MerkleTree> {
+    return buildMerkleTree(this.events);
+  }
+}
+
 /**
- * Build a Merkle tree from audit event entries.
+ * Build a binary Merkle tree from audit event entries.
  * Time: O(n). Space: O(n) for all layers.
  */
 export async function buildMerkleTree(events: AuditEvent[]): Promise<MerkleTree> {
