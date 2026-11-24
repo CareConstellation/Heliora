@@ -1,4 +1,4 @@
-import { xdr } from '@stellar/stellar-sdk';
+import { xdr, Operation, rpc } from '@stellar/stellar-sdk';
 import * as Sentry from '@sentry/nextjs';
 import {
   SorobanContractErrorCode,
@@ -528,4 +528,144 @@ export function decodeSimulationError(
 
   return decoded;
 }
+
+/* ─── Soroban State Archival & TTL Extension (#186) ──────────────── */
+
+/**
+ * Minimum remaining ledgers before a storage entry requires proactive TTL extension.
+ * When liveUntilLedger - currentLedger < 50,000, extension is triggered.
+ */
+export const TTL_EXTENSION_THRESHOLD_LEDGERS = 50_000;
+
+/** Default number of ledgers to extend footprint TTL to past current ledger. */
+export const DEFAULT_EXTEND_TO_LEDGERS = 100_000;
+
+export interface LedgerEntryTtlInfo {
+  key: string;
+  liveUntilLedgerSeq?: number;
+  lastModifiedLedgerSeq?: number;
+  remainingLedgers: number;
+  isArchived: boolean;
+  needsExtension: boolean;
+}
+
+/**
+ * Checks whether a ledger entry is archived (expired or missing liveUntilLedgerSeq past current ledger).
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function isEntryArchived(
+  entry: { liveUntilLedgerSeq?: number; liveUntilLedger?: number } | null | undefined,
+  currentLedger: number,
+): boolean {
+  if (!entry) {
+    return true;
+  }
+  const liveUntil = entry.liveUntilLedgerSeq ?? entry.liveUntilLedger;
+  if (typeof liveUntil !== 'number') {
+    return true;
+  }
+  return liveUntil <= currentLedger;
+}
+
+/**
+ * Calculates remaining active ledgers for a ledger entry. Returns 0 if expired or archived.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function getRemainingLedgers(
+  entry: { liveUntilLedgerSeq?: number; liveUntilLedger?: number } | null | undefined,
+  currentLedger: number,
+): number {
+  if (!entry) {
+    return 0;
+  }
+  const liveUntil = entry.liveUntilLedgerSeq ?? entry.liveUntilLedger;
+  if (typeof liveUntil !== 'number') {
+    return 0;
+  }
+  return Math.max(0, liveUntil - currentLedger);
+}
+
+/**
+ * Evaluates whether an entry requires proactive TTL extension (< 50,000 remaining ledgers).
+ * An entry already archived (0 remaining ledgers) requires restoration instead of extension.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function needsTtlExtension(
+  entry: { liveUntilLedgerSeq?: number; liveUntilLedger?: number } | null | undefined,
+  currentLedger: number,
+  threshold: number = TTL_EXTENSION_THRESHOLD_LEDGERS,
+): boolean {
+  if (isEntryArchived(entry, currentLedger)) {
+    return false;
+  }
+  const remaining = getRemainingLedgers(entry, currentLedger);
+  return remaining < threshold;
+}
+
+/**
+ * Queries getLedgerEntries on Soroban RPC to fetch entry status and liveUntilLedger sequences.
+ * Time Complexity: O(N) where N is the number of keys.
+ * Space Complexity: O(N) for returned entries.
+ */
+export async function fetchLedgerEntriesWithTtl(
+  serverOrUrl: rpc.Server | string,
+  keys: (string | xdr.LedgerKey)[],
+): Promise<{
+  latestLedger: number;
+  entries: LedgerEntryTtlInfo[];
+}> {
+  const server = typeof serverOrUrl === 'string' ? new rpc.Server(serverOrUrl) : serverOrUrl;
+  const ledgerKeys = keys.map((k) =>
+    typeof k === 'string' ? xdr.LedgerKey.fromXDR(k, 'base64') : k,
+  );
+
+  const response = await server.getLedgerEntries(...ledgerKeys);
+  const latestLedger = response.latestLedger;
+  const responseEntries = response.entries || [];
+
+  const entries: LedgerEntryTtlInfo[] = responseEntries.map((resEntry) => {
+    const keyStr = typeof resEntry.key === 'string' ? resEntry.key : (resEntry.key as any).toXDR('base64');
+    const liveUntil = resEntry.liveUntilLedgerSeq;
+    const lastModified = resEntry.lastModifiedLedgerSeq;
+    const archived = isEntryArchived({ liveUntilLedgerSeq: liveUntil }, latestLedger);
+    const needsExt = needsTtlExtension({ liveUntilLedgerSeq: liveUntil }, latestLedger);
+    const remaining = getRemainingLedgers({ liveUntilLedgerSeq: liveUntil }, latestLedger);
+
+    return {
+      key: keyStr,
+      liveUntilLedgerSeq: liveUntil,
+      lastModifiedLedgerSeq: lastModified,
+      remainingLedgers: remaining,
+      isArchived: archived,
+      needsExtension: needsExt,
+    };
+  });
+
+  return {
+    latestLedger,
+    entries,
+  };
+}
+
+/**
+ * Builds an extendFootprintTtl Soroban operation.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function buildExtendFootprintTtlOp(extendTo: number = DEFAULT_EXTEND_TO_LEDGERS) {
+  return Operation.extendFootprintTtl({ extendTo });
+}
+
+/**
+ * Builds a restoreFootprint Soroban operation.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function buildRestoreFootprintOp() {
+  return Operation.restoreFootprint({});
+}
+
 

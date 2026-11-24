@@ -64,7 +64,7 @@ function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => v
 
 export default function ConnectWalletModal({ onClose, autoFundTestnet = false }: Props) {
   const { setWallet, network } = useWalletStore();
-  const { connect, availableWallets, isLoading, error: managerError } = useWalletManager();
+  const { connect, error: managerError } = useWalletManager();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<WalletOption | null>(null);
   const [ledgerAccounts, setLedgerAccounts] = useState<Array<{ publicKey: string; path: string }> | null>(null);
@@ -154,8 +154,7 @@ export default function ConnectWalletModal({ onClose, autoFundTestnet = false }:
       }
       setLedgerAccounts(accounts);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || 'Failed to connect Ledger device');
+      setError(ledgerHardwareWallet.mapLedgerError(e));
       setLoading(null);
     }
   }
@@ -165,8 +164,11 @@ export default function ConnectWalletModal({ onClose, autoFundTestnet = false }:
       const { data } = await api.get<{ role: UserRole }>(`/users/${publicKey}/role`);
       setWallet(publicKey, data.role, 'ledger');
       onClose();
-    } catch {
-      setError('Failed to fetch user role. Ensure your address is registered.');
+    } catch (e: unknown) {
+      setError(
+        ledgerHardwareWallet.mapLedgerError(e) ||
+          'Failed to fetch user role. Ensure your address is registered.',
+      );
     } finally {
       setLoading(null);
     }
