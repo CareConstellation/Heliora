@@ -19,6 +19,7 @@ import type {
   EligibilityKind,
   EligibilityProofToken,
   FinancialHardshipProofToken,
+  GeoResidencyProofToken,
 } from '@/types';
 import {
   proveInWorker,
@@ -81,6 +82,82 @@ const CIRCUITS: Record<EligibilityKind, string> = {
 
 /** Circuit basename for the deductible proof (`circuits/insurance_deductible.circom`). */
 export const DEDUCTIBLE_CIRCUIT = 'insurance_deductible';
+
+/** Circuit basename for geographic residency verification (`circuits/geo_residency.circom`, #220). */
+export const GEO_RESIDENCY_CIRCUIT = 'geo_residency';
+export const GEO_RESIDENCY_TREE_DEPTH = 10;
+
+/** Supported zero-knowledge proving systems (#219). */
+export type ProvingSystem = 'groth16' | 'plonk';
+
+/* ── WebAssembly & Device Memory Management (#221) ───────────────── */
+
+export class ZkMemoryError extends Error {
+  readonly deviceMemoryGb?: number;
+
+  constructor(message?: string, deviceMemoryGb?: number) {
+    super(
+      message ||
+        'WebAssembly out-of-memory during zero-knowledge proof generation. Your device or browser memory is insufficient. Please use a device with at least 4GB of RAM or close other tabs.',
+    );
+    this.name = 'ZkMemoryError';
+    this.deviceMemoryGb = deviceMemoryGb;
+  }
+}
+
+export interface DeviceMemoryCheck {
+  hasSufficientMemory: boolean;
+  deviceMemoryGb?: number;
+  warning?: string;
+}
+
+/**
+ * Inspects navigator.deviceMemory and returns whether the current client device has
+ * the recommended >= 4GB of RAM for in-browser client-side proving (#221).
+ */
+export function checkDeviceMemory(): DeviceMemoryCheck {
+  if (typeof navigator !== 'undefined' && 'deviceMemory' in navigator) {
+    const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+    if (typeof mem === 'number' && mem > 0) {
+      if (mem < 4) {
+        return {
+          hasSufficientMemory: false,
+          deviceMemoryGb: mem,
+          warning: `Device memory (${mem}GB) is below the recommended 4GB for in-browser zero-knowledge proving. Proof generation may encounter WebAssembly out-of-memory errors on mobile browsers.`,
+        };
+      }
+      return {
+        hasSufficientMemory: true,
+        deviceMemoryGb: mem,
+      };
+    }
+  }
+  return { hasSufficientMemory: true };
+}
+
+/**
+ * Identifies whether an error or exception corresponds to a WebAssembly or browser
+ * allocation / out-of-memory failure during circuit proving (#221).
+ */
+export function isWasmMemoryError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof ZkMemoryError) return true;
+  const msg = String((err as Error)?.message || err).toLowerCase();
+  const name = String((err as Error)?.name || '').toLowerCase();
+  return (
+    name === 'rangeerror' &&
+    (msg.includes('out of memory') ||
+      msg.includes('memory') ||
+      msg.includes('allocation') ||
+      msg.includes('maximum call stack') ||
+      msg.includes('webassembly.memory')) ||
+    msg.includes('out of memory') ||
+    msg.includes('wasm out of memory') ||
+    msg.includes('memory allocation failed') ||
+    msg.includes('allocation failed') ||
+    msg.includes('could not allocate memory')
+  );
+}
 
 /** Base URL serving `<circuit>.wasm`, `<circuit>.zkey` and `<circuit>.vkey.json`. */
 const ARTIFACTS_URL = (process.env.NEXT_PUBLIC_ZK_ARTIFACTS_URL || '/zk').replace(
@@ -198,10 +275,18 @@ export interface DeductibleCredential {
   commitment: string;
 }
 
+export interface GeoResidencyCredential {
+  type: 'geoResidency';
+  zipCode: number;
+  salt: string;
+  commitment: string;
+}
+
 export type EligibilityCredential =
   | AgeCredential
   | InsuranceCredential
-  | VaccinationCredential;
+  | VaccinationCredential
+  | GeoResidencyCredential;
 
 export type VaccinationProofToken = EligibilityProofToken;
 
@@ -322,6 +407,15 @@ export function parseCredential(json: string): EligibilityCredential {
         },
         ...(typeof c.commitment === 'string' ? { commitment: c.commitment } : {}),
       };
+    }
+  }
+
+  if (c.type === 'geoResidency') {
+    const zipCode = typeof c.zipCode === 'number' ? c.zipCode : Number(c.zipCode);
+    const salt = field('salt');
+    const commitment = field('commitment') || field('residencyCommitment');
+    if (salt && commitment && !isNaN(zipCode) && zipCode >= 0 && zipCode <= 99999) {
+      return { type: 'geoResidency', zipCode, salt, commitment };
     }
   }
 
@@ -665,10 +759,13 @@ export async function signVaccinationCredential(
 export interface ProofGenerationOptions extends ArtifactLoaderOptions {
   appointmentId?: string | bigint;
   externalNullifier?: string | bigint;
+  provingSystem?: ProvingSystem;
 }
 
 /**
  * Generates a zero-knowledge eligibility proof in the browser.
+ * Supports both Groth16 and PLONK proving systems (#219).
+ * Gracefully handles WebAssembly out-of-memory errors (#221).
  */
 export async function generateEligibilityProof(
   credential: EligibilityCredential,
@@ -734,12 +831,12 @@ export async function generateEligibilityProof(
   // calculator, which would otherwise silently reduce them modulo r.
   const sanitizedInput = sanitizeCircuitInput(input);
 
-  const { groth16 } = await import('snarkjs');
+  const zkeyExt = options.provingSystem === 'plonk' ? 'plonk.zkey' : 'zkey';
   const wasmArtifact = await loadCircuitArtifact(kind, 'wasm', {
     ...options,
     artifactsUrl,
   });
-  const zkeyArtifact = await loadCircuitArtifact(kind, 'zkey', {
+  const zkeyArtifact = await loadCircuitArtifact(kind, zkeyExt as any, {
     ...options,
     artifactsUrl,
   });
@@ -750,11 +847,28 @@ export async function generateEligibilityProof(
     const zkeyInput =
       zkeyArtifact instanceof ArrayBuffer ? new Uint8Array(zkeyArtifact) : zkeyArtifact;
 
-    const { proof, publicSignals } = await groth16.fullProve(
-      sanitizedInput,
-      wasmInput as any,
-      zkeyInput as any,
-    );
+    let proof: unknown;
+    let publicSignals: string[];
+
+    if (options.provingSystem === 'plonk') {
+      const { plonk } = await import('snarkjs');
+      const res = await plonk.fullProve(
+        sanitizedInput,
+        wasmInput as any,
+        zkeyInput as any,
+      );
+      proof = res.proof;
+      publicSignals = res.publicSignals;
+    } else {
+      const { groth16 } = await import('snarkjs');
+      const res = await groth16.fullProve(
+        sanitizedInput,
+        wasmInput as any,
+        zkeyInput as any,
+      );
+      proof = res.proof;
+      publicSignals = res.publicSignals;
+    }
 
     // For vaccination circuit, publicSignals[4] is the in-circuit nullifier output
     if (kind === 'vaccination' && publicSignals.length >= 5) {
@@ -765,9 +879,14 @@ export async function generateEligibilityProof(
       kind,
       proof,
       publicSignals,
+      protocol: options.provingSystem ?? 'groth16',
       ...(nullifierValue !== undefined ? { nullifier: nullifierValue } : {}),
     };
   } catch (err) {
+    if (isWasmMemoryError(err)) {
+      const memCheck = checkDeviceMemory();
+      throw new ZkMemoryError(undefined, memCheck.deviceMemoryGb);
+    }
     if (!String((err as Error)?.message ?? err).includes('Assert Failed')) {
       throw err;
     }
@@ -786,6 +905,7 @@ export interface VerificationOptions {
   now?: Date;
   nullifierTracker?: NullifierTracker;
   appointmentId?: string;
+  provingSystem?: ProvingSystem;
 }
 
 /**
@@ -793,6 +913,7 @@ export interface VerificationOptions {
  * - Date validity (age cutoff, current insurance date, or vaccination validity)
  * - Issuer commitment / clinic authenticity check
  * - Anti-replay nullifier verification
+ * Supports both Groth16 and PLONK proof verification (#219).
  */
 export async function verifyEligibilityProof(
   token: EligibilityProofToken,
@@ -815,6 +936,11 @@ export async function verifyEligibilityProof(
     }
   }
 
+  const vkeyPath =
+    options?.provingSystem === 'plonk' || token.protocol === 'plonk'
+      ? `${artifactUrl(token.kind, 'vkey.json').replace('.vkey.json', '_plonk.vkey.json')}`
+      : artifactUrl(token.kind, 'vkey.json');
+
   if (token.kind === 'vaccination') {
     if (token.publicSignals.length < 5) return false;
     const [currentDateStr, clinicAx, clinicAy, , circuitNullifier] = token.publicSignals;
@@ -836,14 +962,25 @@ export async function verifyEligibilityProof(
     const vkey =
       verificationKey ??
       options?.verificationKey ??
-      (await loadVerificationKey(artifactUrl(token.kind, 'vkey.json')));
+      (await loadVerificationKey(vkeyPath));
 
-    const { groth16 } = await import('snarkjs');
-    const valid = await groth16.verify(
-      vkey,
-      token.publicSignals,
-      token.proof as Parameters<typeof groth16.verify>[2],
-    );
+    const isPlonk =
+      options?.provingSystem === 'plonk' ||
+      token.protocol === 'plonk' ||
+      (vkey as any)?.protocol === 'plonk';
+
+    let valid: boolean;
+    if (isPlonk) {
+      const { plonk } = await import('snarkjs');
+      valid = await plonk.verify(vkey, token.publicSignals, token.proof as any);
+    } else {
+      const { groth16 } = await import('snarkjs');
+      valid = await groth16.verify(
+        vkey,
+        token.publicSignals,
+        token.proof as Parameters<typeof groth16.verify>[2],
+      );
+    }
 
     if (valid && token.nullifier) {
       tracker.register(token.nullifier, options?.appointmentId);
@@ -867,14 +1004,25 @@ export async function verifyEligibilityProof(
   const vkey =
     verificationKey ??
     options?.verificationKey ??
-    (await loadVerificationKey(artifactUrl(token.kind, 'vkey.json')));
+    (await loadVerificationKey(vkeyPath));
 
-  const { groth16 } = await import('snarkjs');
-  const valid = await groth16.verify(
-    vkey,
-    token.publicSignals,
-    token.proof as Parameters<typeof groth16.verify>[2],
-  );
+  const isPlonk =
+    options?.provingSystem === 'plonk' ||
+    token.protocol === 'plonk' ||
+    (vkey as any)?.protocol === 'plonk';
+
+  let valid: boolean;
+  if (isPlonk) {
+    const { plonk } = await import('snarkjs');
+    valid = await plonk.verify(vkey, token.publicSignals, token.proof as any);
+  } else {
+    const { groth16 } = await import('snarkjs');
+    valid = await groth16.verify(
+      vkey,
+      token.publicSignals,
+      token.proof as Parameters<typeof groth16.verify>[2],
+    );
+  }
 
   if (valid && token.nullifier) {
     tracker.register(token.nullifier, options?.appointmentId);
@@ -1528,5 +1676,311 @@ export async function verifyAgeProofOnChain(
   const retval = (simulation as { result?: { retval?: Parameters<typeof scValToNative>[0] } })
     .result?.retval;
   return retval !== undefined && scValToNative(retval) === true;
+}
+
+/* ── PLONK Proving System Support (#219) ─────────────────────────── */
+
+/**
+ * Generates a zero-knowledge proof using the snarkjs PLONK proving system.
+ *
+ * ## Architectural Trade-offs: Groth16 vs. PLONK
+ *
+ * 1. Proof Size:
+ *    - Groth16: Constant 3 group elements (2 in G1, 1 in G2) on BN254 (~128-256 bytes).
+ *      Optimal for on-chain Soroban storage and minimum gas fees.
+ *    - PLONK: Variable polynomial commitments and evaluations (~400-800 bytes).
+ *      Slightly larger footprint on-chain and in transport tokens.
+ *
+ * 2. Verification Latency:
+ *    - Groth16: ~1-3 ms off-chain; exactly 3 pairing operations and small multi-scalar multiplication.
+ *    - PLONK: ~5-10 ms off-chain; requires evaluating Kate opening proofs and linearization polynomials.
+ *
+ * 3. Proving Latency:
+ *    - Groth16: Fast client-side prover execution (~1.5x to 2x faster than PLONK for equivalent R1CS).
+ *    - PLONK: Moderate client-side proving overhead due to quotient polynomial interpolation and FFT passes.
+ *
+ * 4. Trusted Setup Maintenance:
+ *    - Groth16: Requires circuit-specific Phase 2 ceremony for EVERY circuit change. Any modified constraint
+ *      necessitates a new ceremony and beacon distribution.
+ *    - PLONK: Universal setup (SRS / Powers of Tau). A single universal ceremony supports arbitrary circuits
+ *      up to the constraint upper bound, dramatically simplifying DevOps and circuit upgrades.
+ */
+export async function provePlonk(
+  circuitWasm: Uint8Array | ArrayBuffer | string,
+  zkey: Uint8Array | ArrayBuffer | string,
+  input: Record<string, unknown>,
+): Promise<{ proof: unknown; publicSignals: string[] }> {
+  try {
+    const { plonk } = await import('snarkjs');
+    const sanitized = sanitizeCircuitInput(input);
+    const wasmInput =
+      circuitWasm instanceof ArrayBuffer ? new Uint8Array(circuitWasm) : circuitWasm;
+    const zkeyInput = zkey instanceof ArrayBuffer ? new Uint8Array(zkey) : zkey;
+    return await plonk.fullProve(sanitized, wasmInput as any, zkeyInput as any);
+  } catch (err) {
+    if (isWasmMemoryError(err)) {
+      const mem = checkDeviceMemory();
+      throw new ZkMemoryError(undefined, mem.deviceMemoryGb);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Verifies a PLONK zero-knowledge proof against a PLONK verification key.
+ */
+export async function verifyPlonkProof(
+  vkey: object,
+  publicSignals: string[],
+  proof: unknown,
+): Promise<boolean> {
+  if (!arePublicSignalsCanonical(publicSignals)) return false;
+  const { plonk } = await import('snarkjs');
+  return plonk.verify(vkey, publicSignals, proof as any);
+}
+
+/* ── Zero-Knowledge Geographic Residency Verification (#220) ─────── */
+
+export interface ZipCodeMerkleProof {
+  root: bigint;
+  siblings: bigint[];
+  pathIndices: number[];
+}
+
+/**
+ * Hashes a 5-digit ZIP code leaf using Poseidon.
+ */
+export function computeZipCodeLeaf(zipCode: number | bigint): bigint {
+  const z = BigInt(zipCode);
+  if (z < 0n || z > 99999n) {
+    throw new Error(`Invalid ZIP code ${zipCode}: must be an integer between 00000 and 99999.`);
+  }
+  return poseidonHashBigInt([z]);
+}
+
+/**
+ * Computes patient residency commitment: Poseidon(zipCode, salt).
+ */
+export function computeResidencyCommitment(
+  zipCode: number | bigint,
+  salt: bigint | string,
+): bigint {
+  const z = BigInt(zipCode);
+  const s = typeof salt === 'string' ? BigInt(salt) : salt;
+  return poseidonHashBigInt([z, s]);
+}
+
+/**
+ * Builds a fixed-depth Merkle tree of approved ZIP codes for an authorized healthcare jurisdiction.
+ */
+export function buildZipCodeMerkleTree(
+  zipCodes: Array<number | bigint>,
+  depth = GEO_RESIDENCY_TREE_DEPTH,
+) {
+  const leafCount = 1 << depth;
+  if (zipCodes.length > leafCount) {
+    throw new Error(
+      `Too many ZIP codes (${zipCodes.length}) for tree depth ${depth} (capacity: ${leafCount}).`,
+    );
+  }
+
+  const zeroLeaf = 0n;
+  const leaves: bigint[] = [];
+  for (let i = 0; i < leafCount; i++) {
+    if (i < zipCodes.length && zipCodes[i] !== undefined) {
+      leaves.push(computeZipCodeLeaf(zipCodes[i]!));
+    } else {
+      leaves.push(zeroLeaf);
+    }
+  }
+
+  const tree: bigint[][] = [leaves];
+  for (let d = 0; d < depth; d++) {
+    const currentLevel = tree[d]!;
+    const nextLevel: bigint[] = [];
+    for (let i = 0; i < currentLevel.length; i += 2) {
+      const left = currentLevel[i]!;
+      const right = currentLevel[i + 1]!;
+      nextLevel.push(poseidonHashBigInt([left, right]));
+    }
+    tree.push(nextLevel);
+  }
+
+  const root = tree[depth]![0]!;
+
+  function getProof(zipCodeOrIndex: number | bigint): ZipCodeMerkleProof {
+    let index = -1;
+    if (
+      typeof zipCodeOrIndex === 'number' &&
+      zipCodeOrIndex < zipCodes.length &&
+      zipCodes[zipCodeOrIndex] !== undefined
+    ) {
+      index = zipCodeOrIndex;
+    } else {
+      const targetLeaf = computeZipCodeLeaf(zipCodeOrIndex);
+      index = leaves.findIndex((l) => l === targetLeaf);
+    }
+
+    if (index === -1) {
+      throw new Error(`ZIP code ${zipCodeOrIndex} is not in the authorized jurisdiction tree.`);
+    }
+
+    const siblings: bigint[] = [];
+    const pathIndices: number[] = [];
+
+    let currentIndex = index;
+    for (let d = 0; d < depth; d++) {
+      const isRight = currentIndex % 2 === 1;
+      const siblingIndex = isRight ? currentIndex - 1 : currentIndex + 1;
+      siblings.push(tree[d]![siblingIndex]!);
+      pathIndices.push(isRight ? 1 : 0);
+      currentIndex = Math.floor(currentIndex / 2);
+    }
+
+    return {
+      root,
+      siblings,
+      pathIndices,
+    };
+  }
+
+  return {
+    root,
+    tree,
+    getProof,
+  };
+}
+
+/**
+ * Validates a Merkle membership proof against the authorized jurisdiction root.
+ */
+export function verifyZipCodeMerkleProof(
+  leaf: bigint,
+  siblings: bigint[],
+  pathIndices: number[],
+  expectedRoot: bigint,
+): boolean {
+  if (siblings.length !== pathIndices.length) return false;
+  let current = leaf;
+  for (let i = 0; i < siblings.length; i++) {
+    const isRight = pathIndices[i] === 1;
+    const left = isRight ? siblings[i]! : current;
+    const right = isRight ? current : siblings[i]!;
+    current = poseidonHashBigInt([left, right]);
+  }
+  return current === expectedRoot;
+}
+
+/**
+ * Generates a zero-knowledge geographic residency proof without revealing the patient's ZIP code.
+ */
+export async function generateGeoResidencyProof(
+  zipCode: number,
+  salt: string | bigint,
+  merkleProof: ZipCodeMerkleProof,
+  artifactsUrl = ARTIFACTS_URL,
+  options: GenerateProofOptions = {},
+): Promise<GeoResidencyProofToken> {
+  const saltBigInt = typeof salt === 'string' ? BigInt(salt) : salt;
+  const commitment = computeResidencyCommitment(zipCode, saltBigInt);
+
+  const circuitInput = {
+    zipCode,
+    salt: saltBigInt.toString(),
+    siblings: merkleProof.siblings.map((s) => s.toString()),
+    pathIndices: merkleProof.pathIndices,
+    authorizedRoot: merkleProof.root.toString(),
+    residencyCommitment: commitment.toString(),
+  };
+
+  const sanitized = sanitizeCircuitInput(circuitInput);
+  const wasmArtifact = await loadCircuitArtifact(GEO_RESIDENCY_CIRCUIT, 'wasm', {
+    ...options,
+    artifactsUrl,
+  });
+  const zkeyExt = options.provingSystem === 'plonk' ? 'plonk.zkey' : 'zkey';
+  const zkeyArtifact = await loadCircuitArtifact(GEO_RESIDENCY_CIRCUIT, zkeyExt as any, {
+    ...options,
+    artifactsUrl,
+  });
+
+  const wasmInput =
+    wasmArtifact instanceof ArrayBuffer ? new Uint8Array(wasmArtifact) : wasmArtifact;
+  const zkeyInput =
+    zkeyArtifact instanceof ArrayBuffer ? new Uint8Array(zkeyArtifact) : zkeyArtifact;
+
+  try {
+    let proof: unknown;
+    let publicSignals: string[];
+
+    if (options.provingSystem === 'plonk') {
+      const { plonk } = await import('snarkjs');
+      const res = await plonk.fullProve(sanitized, wasmInput as any, zkeyInput as any);
+      proof = res.proof;
+      publicSignals = res.publicSignals;
+    } else {
+      const { groth16 } = await import('snarkjs');
+      const res = await groth16.fullProve(sanitized, wasmInput as any, zkeyInput as any);
+      proof = res.proof;
+      publicSignals = res.publicSignals;
+    }
+
+    return {
+      kind: 'geoResidency',
+      proof,
+      publicSignals,
+      protocol: options.provingSystem ?? 'groth16',
+    };
+  } catch (err) {
+    if (isWasmMemoryError(err)) {
+      const mem = checkDeviceMemory();
+      throw new ZkMemoryError(undefined, mem.deviceMemoryGb);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Verifies a geographic residency proof against the expected authorized jurisdiction root and commitment.
+ */
+export async function verifyGeoResidencyProof(
+  token: GeoResidencyProofToken,
+  expectedAuthorizedRoot: string | bigint,
+  expectedCommitment: string | bigint,
+  verificationKey?: object,
+  options?: VerificationOptions,
+): Promise<boolean> {
+  if (!arePublicSignalsCanonical(token.publicSignals)) return false;
+  if (token.publicSignals.length < 2) return false;
+
+  const [authorizedRootSignal, commitmentSignal] = token.publicSignals;
+  const expectedRootStr = expectedAuthorizedRoot.toString();
+  const expectedCommitmentStr = expectedCommitment.toString();
+
+  if (authorizedRootSignal !== expectedRootStr || commitmentSignal !== expectedCommitmentStr) {
+    return false;
+  }
+
+  const vkey =
+    verificationKey ??
+    options?.verificationKey ??
+    (await loadVerificationKey(artifact(GEO_RESIDENCY_CIRCUIT, 'vkey.json')));
+
+  const isPlonk =
+    options?.provingSystem === 'plonk' ||
+    token.protocol === 'plonk' ||
+    (vkey as any)?.protocol === 'plonk';
+
+  if (isPlonk) {
+    const { plonk } = await import('snarkjs');
+    return plonk.verify(vkey, token.publicSignals, token.proof as any);
+  }
+
+  const { groth16 } = await import('snarkjs');
+  return groth16.verify(
+    vkey,
+    token.publicSignals,
+    token.proof as Parameters<typeof groth16.verify>[2],
+  );
 }
 

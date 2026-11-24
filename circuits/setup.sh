@@ -30,16 +30,24 @@ CIRCUITS=(
   vaccine_verification
   clinician_credential
   financial_hardship
+  geo_residency
 )
 
 for circuit in "${CIRCUITS[@]}"; do
   circom "$ROOT/circuits/$circuit.circom" --r1cs --wasm -l "$ROOT/node_modules" -o "$BUILD"
+  
+  # Groth16 setup (circuit-specific phase 2 ceremony)
   "$SNARKJ" groth16 setup "$BUILD/$circuit.r1cs" "$PTAU" "$BUILD/${circuit}_0000.zkey"
   "$SNARKJ" zkey contribute "$BUILD/${circuit}_0000.zkey" "$BUILD/${circuit}_0001.zkey" \
     --name="Heliora contribution" -e="$(openssl rand -hex 32)"
   "$SNARKJ" zkey beacon "$BUILD/${circuit}_0001.zkey" "$OUT/$circuit.zkey" "$BEACON" 10 -n="Final beacon"
   "$SNARKJ" zkey verify "$BUILD/$circuit.r1cs" "$PTAU" "$OUT/$circuit.zkey"
   "$SNARKJ" zkey export verificationkey "$OUT/$circuit.zkey" "$OUT/$circuit.vkey.json"
+
+  # PLONK setup (universal setup without circuit-specific phase 2, Issue #219)
+  "$SNARKJ" plonk setup "$BUILD/$circuit.r1cs" "$PTAU" "$OUT/${circuit}_plonk.zkey"
+  "$SNARKJ" zkey export verificationkey "$OUT/${circuit}_plonk.zkey" "$OUT/${circuit}_plonk.vkey.json"
+
   cp "$BUILD/${circuit}_js/$circuit.wasm" "$OUT/$circuit.wasm"
 done
 

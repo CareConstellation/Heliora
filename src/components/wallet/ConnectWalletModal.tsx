@@ -5,6 +5,7 @@ import { useWalletStore } from '@/store/useWalletStore';
 import { useWalletManager } from '@/hooks/useWalletManager';
 import { ledgerHardwareWallet } from '@/lib/ledgerHardwareWallet';
 import { FriendbotFaucet } from '@/lib/wallet/FriendbotFaucet';
+import { checkFreighterNetworkMismatch, type NetworkMismatchResult } from '@/lib/wallet/FreighterSigner';
 import type { UserRole } from '@/types';
 import type { WalletType } from '@/lib/wallet/adapters';
 import api from '@/services/api.service';
@@ -70,6 +71,7 @@ export default function ConnectWalletModal({ onClose, autoFundTestnet = false }:
   const [ledgerAccounts, setLedgerAccounts] = useState<Array<{ publicKey: string; path: string }> | null>(null);
   const [ledgerSupported, setLedgerSupported] = useState(true);
   const [fundingStatus, setFundingStatus] = useState<string | null>(null);
+  const [networkMismatch, setNetworkMismatch] = useState<NetworkMismatchResult | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
 
   useFocusTrap(modalRef, onClose);
@@ -89,8 +91,16 @@ export default function ConnectWalletModal({ onClose, autoFundTestnet = false }:
     setLoading(walletType as WalletOption);
     setError(null);
     setFundingStatus(null);
+    setNetworkMismatch(null);
 
     try {
+      if (walletType === 'freighter') {
+        const mismatchResult = await checkFreighterNetworkMismatch(network);
+        if (mismatchResult.isMismatch) {
+          setNetworkMismatch(mismatchResult);
+        }
+      }
+
       const publicKey = await connect(walletType);
       if (!publicKey) {
         setError('Failed to connect wallet');
@@ -195,6 +205,21 @@ export default function ConnectWalletModal({ onClose, autoFundTestnet = false }:
             &times;
           </button>
         </div>
+
+        {networkMismatch?.isMismatch && (
+          <div
+            role="alert"
+            className="mb-4 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-md p-3"
+          >
+            <div className="flex items-center gap-1.5 font-semibold text-amber-900">
+              <span aria-hidden="true">⚠️</span>
+              <span>Network Mismatch Warning</span>
+            </div>
+            <p className="mt-1 text-amber-800">
+              Freighter is currently on <strong>{networkMismatch.walletNetwork}</strong>, but Heliora is configured for <strong>{networkMismatch.expectedNetwork}</strong>. Please switch networks in your Freighter extension.
+            </p>
+          </div>
+        )}
 
         {(error || managerError) && (
           <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">

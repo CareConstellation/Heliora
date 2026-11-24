@@ -120,6 +120,18 @@ export interface EligibilityProofToken {
   proof: unknown;
   publicSignals: string[];
   nullifier?: string;
+  protocol?: 'groth16' | 'plonk';
+}
+
+/**
+ * Proof of patient residency in an authorized state/region jurisdiction (#220).
+ * Public signals are `[authorizedRoot, residencyCommitment]`; the exact ZIP code stays private.
+ */
+export interface GeoResidencyProofToken {
+  kind: 'geoResidency';
+  proof: unknown;
+  publicSignals: string[];
+  protocol?: 'groth16' | 'plonk';
 }
 
 /**
