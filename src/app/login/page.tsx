@@ -26,6 +26,42 @@ import { isShieldCompromised } from '@/lib/antiPhishing';
 import { ROLE_DASHBOARD_MAP } from '@/hooks/useRoleRedirect';
 import AntiPhishingShield from '@/components/auth/AntiPhishingShield';
 import OfficialDomainBanner from '@/components/auth/OfficialDomainBanner';
+import { verifyStrictSep10Challenge } from '@/lib/sep10';
+
+/**
+ * Strict SEP-10 challenge validator for login authentication (#194).
+ * Enforces sequence 0, server signature against NEXT_PUBLIC_AUTH_SIGNING_KEY,
+ * and 5-minute validity window on challenge nonces.
+ */
+export function validateLoginChallenge(
+  challengeXdr: string,
+  account: string,
+  options?: {
+    serverSigningKey?: string;
+    homeDomain?: string;
+    webAuthDomain?: string;
+  },
+) {
+  const serverSigningKey =
+    options?.serverSigningKey || process.env.NEXT_PUBLIC_AUTH_SIGNING_KEY?.trim();
+  if (!serverSigningKey) {
+    throw new Error('SEP-10: NEXT_PUBLIC_AUTH_SIGNING_KEY must be configured in strict mode.');
+  }
+
+  const defaultHomeDomain =
+    process.env.NEXT_PUBLIC_AUTH_HOME_DOMAIN?.trim() ||
+    (typeof window !== 'undefined' ? window.location.hostname : 'heliora.io');
+  const homeDomain = options?.homeDomain || defaultHomeDomain;
+  const webAuthDomain = options?.webAuthDomain || homeDomain;
+
+  return verifyStrictSep10Challenge(challengeXdr, {
+    serverSigningKey,
+    homeDomain,
+    webAuthDomain,
+    account,
+    strict: true,
+  });
+}
 
 type Role = 'PATIENT' | 'DOCTOR' | 'HOSPITAL';
 

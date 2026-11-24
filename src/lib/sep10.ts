@@ -8,7 +8,7 @@
  */
 
 import axios from 'axios';
-import { StellarToml, WebAuth } from '@stellar/stellar-sdk';
+import { StellarToml, WebAuth, TransactionBuilder, Keypair } from '@stellar/stellar-sdk';
 import { STELLAR_CONFIG, type TransactionSigner } from '@/lib/stellar';
 
 /** Anchor endpoints published in its stellar.toml. */
@@ -106,10 +106,143 @@ export async function getSep10Token(
   return data.token;
 }
 
+export interface StrictChallengeOptions {
+  serverSigningKey: string;
+  homeDomain: string;
+  webAuthDomain: string;
+  account?: string;
+  networkPassphrase?: string;
+  strict?: boolean;
+  expectedServerSigningKey?: string;
+  expectedHomeDomain?: string;
+  maxValidityWindowSeconds?: number;
+}
+
+/** Maximum challenge validity window in strict mode (5 minutes = 300 seconds). */
+export const MAX_CHALLENGE_VALIDITY_WINDOW_SECONDS = 300;
+
 /**
- * Validates a SEP-10 challenge (sequence 0, server signature, time bounds, home and
- * web-auth domain operations, client account) and signs it with the wallet. The
- * signed envelope is returned for the auth server only; it is never submitted to the ledger.
+ * Validates a SEP-10 challenge transaction in strict mode:
+ * 1. Enforces sequence number is 0.
+ * 2. Enforces valid time bounds within a 5-minute (300s) validity window and non-expired.
+ * 3. Verifies server signature against expected key (NEXT_PUBLIC_AUTH_SIGNING_KEY).
+ * 4. Verifies home domain and web auth domain matching.
+ * 5. Verifies client account ID matches target account if supplied.
+ */
+export function verifyStrictSep10Challenge(
+  challengeXdr: string,
+  options: StrictChallengeOptions,
+): { clientAccountID: string; matchedHomeDomain: string } {
+  const {
+    serverSigningKey,
+    homeDomain,
+    webAuthDomain,
+    account,
+    networkPassphrase = STELLAR_CONFIG.passphrase,
+    strict = true,
+    expectedServerSigningKey = process.env.NEXT_PUBLIC_AUTH_SIGNING_KEY?.trim(),
+    expectedHomeDomain = process.env.NEXT_PUBLIC_AUTH_HOME_DOMAIN?.trim(),
+    maxValidityWindowSeconds = MAX_CHALLENGE_VALIDITY_WINDOW_SECONDS,
+  } = options;
+
+  // 1. In strict mode, verify server signing key matches configured key if set
+  if (strict && expectedServerSigningKey && serverSigningKey !== expectedServerSigningKey) {
+    throw new Error('SEP-10: Server signing key does not match configured NEXT_PUBLIC_AUTH_SIGNING_KEY.');
+  }
+
+  // 2. In strict mode, verify home domain matches configured domain if set
+  if (strict && expectedHomeDomain && homeDomain !== expectedHomeDomain) {
+    throw new Error('SEP-10: Home domain does not match configured NEXT_PUBLIC_AUTH_HOME_DOMAIN.');
+  }
+
+  // 3. Parse transaction envelope to inspect sequence and time bounds
+  let tx;
+  try {
+    tx = TransactionBuilder.fromXDR(challengeXdr, networkPassphrase);
+  } catch (err) {
+    throw new Error(
+      `SEP-10: Failed to decode challenge transaction XDR: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // 4. Enforce sequence number 0
+  if (tx.sequence !== '0') {
+    throw new Error('SEP-10: Challenge transaction sequence number must be 0.');
+  }
+
+  // 5. Enforce 5-minute validity window on challenge nonces
+  if (!tx.timeBounds) {
+    throw new Error('SEP-10: Challenge transaction missing required time bounds.');
+  }
+
+  const minTime = Number(tx.timeBounds.minTime);
+  const maxTime = Number(tx.timeBounds.maxTime);
+
+  if (isNaN(minTime) || isNaN(maxTime) || maxTime <= minTime) {
+    throw new Error('SEP-10: Invalid challenge transaction time bounds.');
+  }
+
+  const validityWindow = maxTime - minTime;
+  if (strict && validityWindow > maxValidityWindowSeconds) {
+    throw new Error(
+      `SEP-10: Challenge validity window exceeds ${maxValidityWindowSeconds} seconds (5 minutes).`,
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  // Allow 60s clock skew
+  if (now > maxTime + 60) {
+    throw new Error('SEP-10: Challenge transaction has expired.');
+  }
+  if (now < minTime - 60) {
+    throw new Error('SEP-10: Challenge transaction is not yet valid.');
+  }
+
+  // 6. Verify server signature exists and is cryptographically valid
+  if (!tx.signatures || tx.signatures.length === 0) {
+    throw new Error('SEP-10: Challenge transaction contains no signatures.');
+  }
+
+  let serverKp: Keypair;
+  try {
+    serverKp = Keypair.fromPublicKey(serverSigningKey);
+  } catch {
+    throw new Error('SEP-10: Invalid server signing public key.');
+  }
+
+  const txHash = tx.hash();
+  const hasValidServerSig = tx.signatures.some((sig) => {
+    try {
+      return serverKp.verify(txHash, sig.signature());
+    } catch {
+      return false;
+    }
+  });
+
+  if (!hasValidServerSig) {
+    throw new Error('SEP-10: Challenge transaction is not signed by the expected server key.');
+  }
+
+  // 7. Verify SEP-10 structural requirements via WebAuth.readChallengeTx
+  const { clientAccountID, matchedHomeDomain } = WebAuth.readChallengeTx(
+    challengeXdr,
+    serverSigningKey,
+    networkPassphrase,
+    homeDomain,
+    webAuthDomain,
+  );
+
+  if (account && clientAccountID !== account) {
+    throw new Error('SEP-10: challenge was issued for a different account.');
+  }
+
+  return { clientAccountID, matchedHomeDomain };
+}
+
+/**
+ * Validates a SEP-10 challenge in strict mode (sequence 0, server signature against
+ * NEXT_PUBLIC_AUTH_SIGNING_KEY, 5-minute validity window on challenge nonces, home domain)
+ * and signs it with the wallet. The signed envelope is returned for the auth server only.
  */
 export async function signChallenge(
   challengeXdr: string,
@@ -118,16 +251,17 @@ export async function signChallenge(
   webAuthDomain: string,
   account: string,
   sign: TransactionSigner,
+  strictOptions?: Partial<StrictChallengeOptions>,
 ): Promise<string> {
-  // Throws if any SEP-10 challenge requirement is not met.
-  const { clientAccountID } = WebAuth.readChallengeTx(
-    challengeXdr,
+  // Throws if any strict SEP-10 challenge requirement is not met.
+  verifyStrictSep10Challenge(challengeXdr, {
     serverSigningKey,
-    STELLAR_CONFIG.passphrase,
     homeDomain,
     webAuthDomain,
-  );
-  if (clientAccountID !== account)
-    throw new Error('SEP-10: challenge was issued for a different account.');
+    account,
+    ...strictOptions,
+  });
+
   return sign(challengeXdr, STELLAR_CONFIG.passphrase, account);
 }
+
