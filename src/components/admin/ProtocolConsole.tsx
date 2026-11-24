@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import ContractUpgradeModal from '@/components/admin/ContractUpgradeModal';
 import {
   CURRENT_PROTOCOL_PARAMETERS,
   assembleAdminConfigEnvelope,
@@ -20,6 +21,7 @@ export default function ProtocolConsole() {
   const [proposalEnvelope, setProposalEnvelope] = useState<{ xdr: string; hashPreview: string } | null>(null);
   const [isAssembling, setIsAssembling] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
 
   // Proposed parameters object for live comparison
   const proposedFee = Number(feePercent);
@@ -68,7 +70,7 @@ export default function ProtocolConsole() {
 
   function handleCopyXdr() {
     if (proposalEnvelope) {
-      navigator.clipboard.writeText(proposalEnvelope.xdr);
+      void navigator.clipboard.writeText(proposalEnvelope.xdr);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -92,6 +94,13 @@ export default function ProtocolConsole() {
             Configure Soroban platform protocol parameters, fee schedules, asset trustlines, and oracle endpoints.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setIsUpgradeModalOpen(true)}
+          className="btn-secondary rounded-lg text-xs py-1.5 px-3 font-semibold shrink-0"
+        >
+          Contract Upgrade Migration
+        </button>
       </div>
 
       {errorMessage && (
@@ -294,6 +303,12 @@ export default function ProtocolConsole() {
           </div>
         </div>
       )}
+
+      <ContractUpgradeModal
+        isOpen={isUpgradeModalOpen}
+        onClose={() => setIsUpgradeModalOpen(false)}
+        defaultContractId={contractId}
+      />
     </section>
   );
 }

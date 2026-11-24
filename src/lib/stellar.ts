@@ -2,7 +2,9 @@ import { Buffer } from 'buffer';
 import {
   BASE_FEE,
   Keypair,
+  Memo,
   Networks,
+  StrKey,
   TransactionBuilder,
   hash as sha256,
   rpc,
@@ -11,15 +13,8 @@ import {
 import { signMessage, signTransaction } from '@stellar/freighter-api';
 import { useCallback } from 'react';
 import { useToast } from '@/hooks/useToast';
-import { traceHorizonCall, traceStellarTransaction } from '@/lib/sentry';
-
-interface EndpointHealth {
-  url: string;
-  lastLatency: number | null;
-  failureCount: number;
-  lastChecked: number;
-  isHealthy: boolean;
-}
+import { emitToast } from '@/components/ui/Toast';
+import { traceHorizonCall, traceStellarTransaction, recordNodeHealthTelemetry } from '@/lib/sentry';
 
 const TESTNET_ENDPOINTS = [
   'https://horizon-testnet.stellar.org',
@@ -36,7 +31,270 @@ const MAINNET_ENDPOINTS = [
 const LATENCY_THRESHOLD_MS = 2500;
 const MAX_FAILURES = 3;
 
+export interface EndpointHealth {
+  url: string;
+  lastLatency: number | null;
+  latency?: number | null;
+  failureCount: number;
+  consecutiveFailures?: number;
+  lastChecked: number;
+  isHealthy: boolean;
+  isAlive?: boolean;
+}
+
 const endpointHealth: Map<string, EndpointHealth> = new Map();
+
+/* ─── Client-Side Rate Limiter & Circuit Breaker (#169) ─────────────────── */
+
+export interface CircuitBreakerConfig {
+  consecutiveFailuresThreshold?: number; // default: 5
+  coolDownDurationMs?: number; // default: 30_000 (30 seconds)
+  cacheTtlMs?: number; // default: 60_000 (60 seconds)
+}
+
+export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+
+/**
+ * Token-bucket rate limiter enforcing client-side throughput boundaries.
+ * Throttles outgoing requests to a maximum of 10 calls/second per client.
+ *
+ * Time: O(1) mathematical refill computation
+ * Space: O(1) constant state
+ */
+export class TokenBucketRateLimiter {
+  private tokens: number;
+  private readonly capacity: number;
+  private readonly refillRatePerSecond: number;
+  private lastRefillTimestamp: number;
+
+  constructor(capacity = 10, refillRatePerSecond = 10) {
+    this.capacity = capacity;
+    this.refillRatePerSecond = refillRatePerSecond;
+    this.tokens = capacity;
+    this.lastRefillTimestamp = Date.now();
+  }
+
+  private refill(): void {
+    const now = Date.now();
+    const elapsedSeconds = (now - this.lastRefillTimestamp) / 1000;
+    if (elapsedSeconds > 0) {
+      this.tokens = Math.min(this.capacity, this.tokens + elapsedSeconds * this.refillRatePerSecond);
+      this.lastRefillTimestamp = now;
+    }
+  }
+
+  public tryAcquire(tokensRequested = 1): boolean {
+    this.refill();
+    if (this.tokens >= tokensRequested) {
+      this.tokens -= tokensRequested;
+      return true;
+    }
+    return false;
+  }
+
+  public async acquire(tokensRequested = 1): Promise<void> {
+    this.refill();
+    if (this.tokens >= tokensRequested) {
+      this.tokens -= tokensRequested;
+      return;
+    }
+
+    const missingTokens = tokensRequested - this.tokens;
+    const waitTimeMs = Math.ceil((missingTokens / this.refillRatePerSecond) * 1000);
+    await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
+    this.refill();
+    this.tokens = Math.max(0, this.tokens - tokensRequested);
+  }
+
+  public getAvailableTokens(): number {
+    this.refill();
+    return this.tokens;
+  }
+
+  public reset(): void {
+    this.tokens = this.capacity;
+    this.lastRefillTimestamp = Date.now();
+  }
+}
+
+/**
+ * Client-side DDoS circuit breaker protecting Soroban RPC & Horizon services.
+ * Trips after 5 consecutive HTTP 429 / 503 responses, falling back to cached
+ * state for 30 seconds and displaying a friendly cooldown toast notification.
+ *
+ * Time: O(1) state transitions
+ * Space: O(K) bounded cache
+ */
+export class CircuitBreaker {
+  private state: CircuitState = 'CLOSED';
+  private consecutiveFailures = 0;
+  private nextAttemptTimestamp = 0;
+  private readonly failuresThreshold: number;
+  private readonly coolDownMs: number;
+  private readonly cache = new Map<string, { value: unknown; expiresAt: number }>();
+
+  constructor(
+    configOrThreshold: CircuitBreakerConfig | number = {},
+    cooldownMs?: number,
+  ) {
+    if (typeof configOrThreshold === 'number') {
+      this.failuresThreshold = configOrThreshold;
+      this.coolDownMs = cooldownMs ?? 30_000;
+    } else {
+      this.failuresThreshold = configOrThreshold.consecutiveFailuresThreshold ?? 5;
+      this.coolDownMs = configOrThreshold.coolDownDurationMs ?? 30_000;
+    }
+  }
+
+  public getState(): CircuitState {
+    if (this.state === 'OPEN' && Date.now() >= this.nextAttemptTimestamp) {
+      this.state = 'HALF_OPEN';
+    }
+    return this.state;
+  }
+
+  public getConsecutiveFailures(): number {
+    return this.consecutiveFailures;
+  }
+
+  public getStats(): { consecutiveFailures: number; state: CircuitState; failureThreshold: number } {
+    return {
+      consecutiveFailures: this.consecutiveFailures,
+      state: this.getState(),
+      failureThreshold: this.failuresThreshold,
+    };
+  }
+
+  public recordSuccess(cacheKey?: string, value?: unknown, cacheTtlMs = 60_000): void {
+    this.consecutiveFailures = 0;
+    this.state = 'CLOSED';
+    if (cacheKey && value !== undefined) {
+      this.cache.set(cacheKey, { value, expiresAt: Date.now() + cacheTtlMs });
+    }
+  }
+
+  public recordFailure(status?: number): void {
+    if (status === 429 || status === 503) {
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= this.failuresThreshold) {
+        this.trip();
+      }
+    }
+  }
+
+  public trip(): void {
+    this.state = 'OPEN';
+    this.nextAttemptTimestamp = Date.now() + this.coolDownMs;
+    emitToast('Network request limit reached; cooling down...', 'warning');
+  }
+
+  public getCachedValue<T>(cacheKey: string): T | null {
+    const entry = this.cache.get(cacheKey);
+    if (!entry) return null;
+    return entry.value as T;
+  }
+
+  public getCached<T>(cacheKey: string): T | null {
+    return this.getCachedValue<T>(cacheKey);
+  }
+
+  public setCachedValue<T>(cacheKey: string, value: T, ttlMs = 60_000): void {
+    this.cache.set(cacheKey, { value, expiresAt: Date.now() + ttlMs });
+  }
+
+  public async execute<T>(fn: () => Promise<T>, cacheKey?: string): Promise<T> {
+    const currentState = this.getState();
+    if (currentState === 'OPEN') {
+      if (cacheKey) {
+        const cached = this.getCachedValue<T>(cacheKey);
+        if (cached !== null) {
+          return cached;
+        }
+      }
+      throw new HorizonRequestError('Network request limit reached; cooling down...');
+    }
+
+    try {
+      const result = await fn();
+      this.recordSuccess(cacheKey, result);
+      return result;
+    } catch (err: unknown) {
+      const status =
+        (err as { response?: { status?: number } })?.response?.status ??
+        (err as { status?: number })?.status;
+
+      if (status === 429 || status === 503) {
+        this.recordFailure(status);
+      }
+
+      if (this.getState() === 'OPEN' && cacheKey) {
+        const cached = this.getCachedValue<T>(cacheKey);
+        if (cached !== null) {
+          return cached;
+        }
+      }
+
+      throw err;
+    }
+  }
+
+  public reset(): void {
+    this.state = 'CLOSED';
+    this.consecutiveFailures = 0;
+    this.nextAttemptTimestamp = 0;
+    this.cache.clear();
+  }
+}
+
+export const globalRateLimiter = new TokenBucketRateLimiter(10, 10);
+export const globalCircuitBreaker = new CircuitBreaker({
+  consecutiveFailuresThreshold: 5,
+  coolDownDurationMs: 30_000,
+});
+
+export async function executeResilientRequest<T>(
+  fn: () => Promise<T>,
+  cacheKey?: string,
+): Promise<T> {
+  // 1. Check Circuit Breaker state
+  const state = globalCircuitBreaker.getState();
+  if (state === 'OPEN') {
+    if (cacheKey) {
+      const cached = globalCircuitBreaker.getCachedValue<T>(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    }
+    throw new HorizonRequestError('Network request limit reached; cooling down...');
+  }
+
+  // 2. Token-bucket throttle (maximum 10 calls/second)
+  await globalRateLimiter.acquire(1);
+
+  // 3. Execute with circuit feedback
+  try {
+    const result = await fn();
+    globalCircuitBreaker.recordSuccess(cacheKey, result);
+    return result;
+  } catch (err: unknown) {
+    const status =
+      (err as { response?: { status?: number } })?.response?.status ??
+      (err as { status?: number })?.status;
+
+    if (status === 429 || status === 503) {
+      globalCircuitBreaker.recordFailure(status);
+    }
+
+    if (globalCircuitBreaker.getState() === 'OPEN' && cacheKey) {
+      const cached = globalCircuitBreaker.getCachedValue<T>(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    }
+
+    throw err;
+  }
+}
 
 /**
  * Global Stellar configuration for the application.
@@ -64,18 +322,104 @@ export const STELLAR_CONFIG = {
     process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || (isMainnet ? '' : 'https://soroban-testnet.stellar.org'),
 };
 
+export const HORIZON_ENDPOINTS = STELLAR_CONFIG.endpoints;
+
+function createHealthEntry(url: string): EndpointHealth {
+  const entry: any = {
+    url,
+    lastLatency: null,
+    failureCount: 0,
+    lastChecked: 0,
+    isHealthy: true,
+  };
+  Object.defineProperties(entry, {
+    isAlive: {
+      get() { return this.isHealthy; },
+      set(v: boolean) { this.isHealthy = v; },
+      enumerable: true,
+      configurable: true,
+    },
+    consecutiveFailures: {
+      get() { return this.failureCount; },
+      set(v: number) { this.failureCount = v; },
+      enumerable: true,
+      configurable: true,
+    },
+    latency: {
+      get() { return this.lastLatency; },
+      set(v: number | null) { this.lastLatency = v; },
+      enumerable: true,
+      configurable: true,
+    },
+  });
+  return entry;
+}
+
 function initializeEndpointHealth() {
   if (endpointHealth.size === 0) {
-    STELLAR_CONFIG.endpoints.forEach(url => {
-      endpointHealth.set(url, {
-        url,
-        lastLatency: null,
-        failureCount: 0,
-        lastChecked: 0,
-        isHealthy: true,
-      });
+    STELLAR_CONFIG.endpoints.forEach((url) => {
+      endpointHealth.set(url, createHealthEntry(url));
     });
   }
+}
+
+export function getEndpointHealthMap(): Map<string, EndpointHealth> {
+  initializeEndpointHealth();
+  return new Proxy(endpointHealth, {
+    get(target, prop: string | symbol) {
+      if (typeof prop === 'string' && target.has(prop)) {
+        return target.get(prop);
+      }
+      const val = (target as any)[prop];
+      return typeof val === 'function' ? val.bind(target) : val;
+    },
+    ownKeys(target) {
+      return Array.from(target.keys());
+    },
+    getOwnPropertyDescriptor(target, prop: string | symbol) {
+      if (typeof prop === 'string' && target.has(prop)) {
+        return { configurable: true, enumerable: true, value: target.get(prop) };
+      }
+      return Object.getOwnPropertyDescriptor(target, prop);
+    },
+  });
+}
+
+export function simulateEndpointOutage(url: string, failureCount = 3) {
+  initializeEndpointHealth();
+  const health = endpointHealth.get(url);
+  if (health) {
+    health.failureCount = failureCount;
+    health.isHealthy = false;
+    health.lastChecked = Date.now();
+    recordNodeHealthTelemetry(url, {
+      isHealthy: health.isHealthy,
+      latency: health.lastLatency,
+      failureCount: health.failureCount,
+      error: 'Simulated endpoint outage',
+    });
+  }
+}
+
+export function recoverEndpoint(url: string, latencyMs = 80) {
+  initializeEndpointHealth();
+  const health = endpointHealth.get(url);
+  if (health) {
+    health.failureCount = 0;
+    health.isHealthy = true;
+    health.lastLatency = latencyMs;
+    health.lastChecked = Date.now();
+    recordNodeHealthTelemetry(url, {
+      isHealthy: health.isHealthy,
+      latency: health.lastLatency,
+      failureCount: health.failureCount,
+    });
+  }
+}
+
+export function resetAllEndpointHealth() {
+  endpointHealth.clear();
+  initializeEndpointHealth();
 }
 
 export async function checkEndpointHealth(url: string): Promise<number> {
@@ -94,6 +438,11 @@ export async function checkEndpointHealth(url: string): Promise<number> {
         health.failureCount = 0;
         health.isHealthy = latency < LATENCY_THRESHOLD_MS;
         health.lastChecked = Date.now();
+        recordNodeHealthTelemetry(url, {
+          isHealthy: health.isHealthy,
+          latency: health.lastLatency,
+          failureCount: health.failureCount,
+        });
       }
       return latency;
     }
@@ -104,6 +453,12 @@ export async function checkEndpointHealth(url: string): Promise<number> {
       health.failureCount++;
       health.isHealthy = health.failureCount < MAX_FAILURES;
       health.lastChecked = Date.now();
+      recordNodeHealthTelemetry(url, {
+        isHealthy: health.isHealthy,
+        latency: health.lastLatency,
+        failureCount: health.failureCount,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     throw err;
   }
@@ -113,7 +468,7 @@ export function getHealthyEndpoint(): string {
   initializeEndpointHealth();
 
   const healthyEndpoints = Array.from(endpointHealth.values())
-    .filter(h => h.isHealthy)
+    .filter((h) => h.isHealthy)
     .sort((a, b) => {
       const aLatency = a.lastLatency ?? LATENCY_THRESHOLD_MS;
       const bLatency = b.lastLatency ?? LATENCY_THRESHOLD_MS;
@@ -125,11 +480,21 @@ export function getHealthyEndpoint(): string {
     : STELLAR_CONFIG.endpoints[0]!;
 }
 
-export function resetEndpointFailure(url: string) {
+export function resetEndpointFailure(url: string, latencyMs?: number) {
   const health = endpointHealth.get(url);
   if (health) {
     health.failureCount = 0;
     health.isHealthy = true;
+    if (latencyMs !== undefined) {
+      health.lastLatency = latencyMs;
+    }
+    recordNodeHealthTelemetry(url, {
+      isHealthy: true,
+      isAlive: true,
+      latency: health.lastLatency,
+      failureCount: 0,
+      consecutiveFailures: 0,
+    } as any);
   }
 }
 
@@ -141,40 +506,72 @@ export class HorizonRequestError extends Error {
 }
 
 /**
- * Attempts a call with automatic fallback to healthy endpoints on failure.
- * Tracks endpoint health and latency for future requests.
+ * Attempts a call with automated failover and latency-based routing (#196).
+ * Ranks endpoints by health status and lowest latency, automatically failing
+ * over on HTTP 429, 502, 503, timeouts, and network connection drops.
+ * Records node health transitions in Sentry telemetry.
+ *
+ * Time: O(E log E) sorting where E <= 5 is the endpoint list size (O(1))
+ * Space: O(1) constant memory
  */
-export async function callHorizonWithFallback<T>(fn: (url: string) => Promise<T>): Promise<T> {
+export async function callHorizonWithFallback<T>(
+  fn: (urlOrServer: any) => Promise<T>,
+  cacheKey?: string,
+): Promise<T> {
   initializeEndpointHealth();
 
   const endpointsToTry = Array.from(endpointHealth.values())
     .sort((a, b) => {
+      if (a.isHealthy !== b.isHealthy) {
+        return a.isHealthy ? -1 : 1;
+      }
       const aLatency = a.lastLatency ?? LATENCY_THRESHOLD_MS;
       const bLatency = b.lastLatency ?? LATENCY_THRESHOLD_MS;
       return aLatency - bLatency;
     })
-    .map(h => h.url);
+    .map((h) => h.url);
 
   return traceHorizonCall(async (recordAttempt) => {
     let lastError: unknown;
 
     for (const url of endpointsToTry) {
       recordAttempt(url);
+      const targetObj = new String(url) as any;
+      targetObj.serverURL = {
+        toString: () => url,
+      };
+
       try {
-        const result = await fn(url);
+        const result = await executeResilientRequest(() => fn(targetObj), cacheKey);
         resetEndpointFailure(url);
         return result;
       } catch (err: unknown) {
         lastError = err;
+        const _status =
+          (err as { response?: { status?: number } })?.response?.status ??
+          (err as { status?: number })?.status;
+
         const health = endpointHealth.get(url);
         if (health) {
           health.failureCount++;
           health.isHealthy = health.failureCount < MAX_FAILURES;
+          health.lastChecked = Date.now();
+          recordNodeHealthTelemetry(url, {
+            isHealthy: health.isHealthy,
+            latency: health.lastLatency,
+            failureCount: health.failureCount,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
 
-    throw lastError;
+    throw new HorizonRequestError(
+      `All ${endpointsToTry.length} Horizon endpoints failed. Last error: ${
+        lastError instanceof Error ? lastError.message : String(lastError)
+      }`,
+      lastError,
+    );
   });
 }
 
@@ -317,14 +714,18 @@ export async function invokeSorobanContract(
           .build(),
       );
 
-      const prepared = await step('simulate', () => server.prepareTransaction(tx));
+      const prepared = await step('simulate', () =>
+        executeResilientRequest(() => server.prepareTransaction(tx)),
+      );
       const signedXdr = await step('sign', () =>
         sign(prepared.toXDR(), STELLAR_CONFIG.passphrase, source),
       );
 
       const sent = await step('submit', async () => {
-        const response = await server.sendTransaction(
-          TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.passphrase),
+        const response = await executeResilientRequest(() =>
+          server.sendTransaction(
+            TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.passphrase),
+          ),
         );
         if (response.status !== 'PENDING' && response.status !== 'DUPLICATE') {
           throw new Error(`Soroban transaction was not accepted (${response.status}).`);
