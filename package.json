@@ -28,6 +28,7 @@
     "@testing-library/dom": "^10.4.2",
     "axios": "^1.13.5",
     "axios-retry": "^4.5.0",
+    "circomlibjs": "^0.1.7",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.18",
     "idb-keyval": "^6.2.1",

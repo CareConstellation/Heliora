@@ -20,7 +20,7 @@ mkdir -p "$BUILD" "$OUT"
 
 [ -f "$PTAU" ] || curl -fL -o "$PTAU" https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_10.ptau
 
-for circuit in age_eligibility insurance_coverage vaccination_proof prescription_dosage; do
+for circuit in age_eligibility insurance_coverage vaccine_verification; do
   circom "$ROOT/circuits/$circuit.circom" --r1cs --wasm -l "$ROOT/node_modules" -o "$BUILD"
   "$SNARKJ" groth16 setup "$BUILD/$circuit.r1cs" "$PTAU" "$BUILD/${circuit}_0000.zkey"
   "$SNARKJ" zkey contribute "$BUILD/${circuit}_0000.zkey" "$BUILD/${circuit}_0001.zkey" \
