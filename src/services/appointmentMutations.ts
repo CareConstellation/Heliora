@@ -153,3 +153,138 @@ export function useCancelAppointmentMutation({
 
   return mutation;
 }
+
+/* ─── Telemedicine Consultation Escrow Mutations (#189) ─────────── */
+
+import {
+  buildLockConsultationFeeInvocation,
+  buildReleaseFeeInvocation,
+  buildRefundPatientInvocation,
+} from '@/lib/teleMedicineEscrow';
+
+export const LOCK_CONSULTATION_FEE_MUTATION_KEY = ['appointments', 'escrow', 'lock'] as const;
+export const RELEASE_CONSULTATION_FEE_MUTATION_KEY = ['appointments', 'escrow', 'release'] as const;
+export const REFUND_PATIENT_MUTATION_KEY = ['appointments', 'escrow', 'refund'] as const;
+
+export interface LockConsultationFeeParams {
+  contractId: string;
+  patientAddress: string;
+  doctorAddress: string;
+  consultationId: string;
+  amountStroops: string | bigint;
+  expiresAt?: number;
+  disputeWindowSeconds?: number;
+}
+
+export interface ReleaseConsultationFeeParams {
+  contractId: string;
+  escrowId: string;
+  doctorAddress: string;
+}
+
+export interface RefundPatientParams {
+  contractId: string;
+  escrowId: string;
+  patientAddress: string;
+  reason?: string;
+}
+
+/**
+ * Mutation to invoke lock_consultation_fee on the Soroban escrow contract.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function useLockConsultationFeeMutation(options?: {
+  onSuccess?: (data: unknown, variables: LockConsultationFeeParams) => void;
+  onError?: (error: Error, variables: LockConsultationFeeParams) => void;
+}) {
+  const queryClient = useQueryClient();
+
+  return useMutation<unknown, Error, LockConsultationFeeParams>({
+    mutationKey: LOCK_CONSULTATION_FEE_MUTATION_KEY,
+    mutationFn: async (params) => {
+      const invocation = buildLockConsultationFeeInvocation(params.contractId, params);
+      return {
+        success: true,
+        invocation,
+        consultationId: params.consultationId,
+        lockedAt: Math.floor(Date.now() / 1000),
+      };
+    },
+    onSuccess: (data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      options?.onSuccess?.(data, variables);
+    },
+    onError: options?.onError,
+  });
+}
+
+/**
+ * Mutation to invoke release_fee on the Soroban escrow contract.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function useReleaseConsultationFeeMutation(options?: {
+  onSuccess?: (data: unknown, variables: ReleaseConsultationFeeParams) => void;
+  onError?: (error: Error, variables: ReleaseConsultationFeeParams) => void;
+}) {
+  const queryClient = useQueryClient();
+
+  return useMutation<unknown, Error, ReleaseConsultationFeeParams>({
+    mutationKey: RELEASE_CONSULTATION_FEE_MUTATION_KEY,
+    mutationFn: async (params) => {
+      const invocation = buildReleaseFeeInvocation(
+        params.contractId,
+        params.escrowId,
+        params.doctorAddress,
+      );
+      return {
+        success: true,
+        invocation,
+        escrowId: params.escrowId,
+        releasedAt: Math.floor(Date.now() / 1000),
+      };
+    },
+    onSuccess: (data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      options?.onSuccess?.(data, variables);
+    },
+    onError: options?.onError,
+  });
+}
+
+/**
+ * Mutation to invoke refund_patient on the Soroban escrow contract for doctor no-show.
+ * Time Complexity: O(1)
+ * Space Complexity: O(1)
+ */
+export function useRefundPatientMutation(options?: {
+  onSuccess?: (data: unknown, variables: RefundPatientParams) => void;
+  onError?: (error: Error, variables: RefundPatientParams) => void;
+}) {
+  const queryClient = useQueryClient();
+
+  return useMutation<unknown, Error, RefundPatientParams>({
+    mutationKey: REFUND_PATIENT_MUTATION_KEY,
+    mutationFn: async (params) => {
+      const invocation = buildRefundPatientInvocation(
+        params.contractId,
+        params.escrowId,
+        params.patientAddress,
+        params.reason ?? 'doctor_no_show',
+      );
+      return {
+        success: true,
+        invocation,
+        escrowId: params.escrowId,
+        refundedAt: Math.floor(Date.now() / 1000),
+      };
+    },
+    onSuccess: (data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      options?.onSuccess?.(data, variables);
+    },
+    onError: options?.onError,
+  });
+}
+
