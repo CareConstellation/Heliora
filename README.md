@@ -113,6 +113,10 @@ Full API reference documenting all endpoints, request/response shapes, and authe
 
 Circuit parameters, security bounds and trusted setup steps: 📄 [`docs/zk-circuits.md`](./docs/zk-circuits.md)
 
+## Telemedicine & WebRTC Architecture
+
+Signaling/ICE sequence, dual-consent transcription, firewall ports, and troubleshooting: 📄 [`docs/telemedicine-architecture.md`](./docs/telemedicine-architecture.md)
+
 ## Switching to Mainnet
 
 To point the frontend at the Stellar mainnet, update these variables in `.env.local`:
