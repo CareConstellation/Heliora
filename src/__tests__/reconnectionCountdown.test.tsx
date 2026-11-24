@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import ReconnectionOverlay from '@/components/consultation/ReconnectionOverlay';
 import { setupAutomatedReconnection } from '@/lib/video';

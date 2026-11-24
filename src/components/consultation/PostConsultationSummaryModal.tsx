@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { CalendarPlus, CheckCircle2, Download, Pill, X } from 'lucide-react';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import {

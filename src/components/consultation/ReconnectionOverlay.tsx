@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import { RefreshCw, AlertCircle, Mic } from 'lucide-react';
 import type { ReconnectionStatus } from '@/types';
 
