@@ -628,3 +628,31 @@ export interface BulkSlotPublishResult {
   slots: TimeSlot[];
   batchId: string;
 }
+
+/* ─── Soroban Contract Error Decoding (#191) ─────────────────────── */
+
+export enum SorobanContractErrorCode {
+  UnauthorizedDoctor = 1001,
+  ExpiredLicense = 1002,
+  DoctorNotRegistered = 1003,
+  RecordNotFound = 1004,
+  AccessDenied = 1005,
+  InvalidRole = 1006,
+  ConsentRequired = 1007,
+  AppointmentNotFound = 1008,
+  InvalidEscrowState = 1009,
+  DisputeAlreadyActive = 1010,
+  SlotUnavailable = 1011,
+  InsufficientPermissions = 1012,
+}
+
+export type SorobanContractErrorName = keyof typeof SorobanContractErrorCode;
+
+export interface DecodedContractError {
+  code: number;
+  name: SorobanContractErrorName | string;
+  message: string;
+  rawError?: string;
+  contractId?: string;
+}
+
