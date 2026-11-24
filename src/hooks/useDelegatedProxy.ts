@@ -1,8 +1,17 @@
 'use client';
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { proxyBannerLabel } from '@/lib/delegatedProxy';
+import {
+  decryptReferredRecord,
+  encryptForReferralOwner,
+  generateReferralReencryptionKey,
+  proxyBannerLabel,
+  proxyTransformReferralCiphertext,
+  type PreCiphertext,
+  type PreReencryptedCiphertext,
+  type PreReencryptionKey,
+} from '@/lib/delegatedProxy';
 import { revokeDelegatedProxyToken } from '@/services/api.service';
 import { useProxyStore } from '@/store/proxyStore';
 
@@ -36,4 +45,58 @@ export function useDelegatedProxy() {
     label: token ? proxyBannerLabel(token) : null,
     exit,
   };
+}
+
+export function useReferralProxyReencryption() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = useCallback(
+    async <T>(fn: () => Promise<T>): Promise<T | null> => {
+      setBusy(true);
+      setError(null);
+      try {
+        return await fn();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Referral proxy re-encryption failed');
+        return null;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const encrypt = useCallback(
+    (plaintext: Uint8Array, ownerPublicKey: JsonWebKey) =>
+      run<PreCiphertext>(() => encryptForReferralOwner(plaintext, ownerPublicKey)),
+    [run],
+  );
+
+  const generateKey = useCallback(
+    (params: {
+      ownerAddress: string;
+      ownerKeyPair: CryptoKeyPair;
+      specialistAddress: string;
+      specialistPublicKey: JsonWebKey;
+      ownerCapsule: PreCiphertext['ownerCapsule'];
+    }) => run<PreReencryptionKey>(() => generateReferralReencryptionKey(params)),
+    [run],
+  );
+
+  const transform = useCallback(
+    (ciphertext: PreCiphertext, reencryptionKey: PreReencryptionKey) =>
+      run<PreReencryptedCiphertext>(async () =>
+        proxyTransformReferralCiphertext(ciphertext, reencryptionKey),
+      ),
+    [run],
+  );
+
+  const decrypt = useCallback(
+    (ciphertext: PreReencryptedCiphertext, specialistKeyPair: CryptoKeyPair) =>
+      run<Uint8Array>(() => decryptReferredRecord(ciphertext, specialistKeyPair)),
+    [run],
+  );
+
+  return { busy, error, encrypt, generateKey, transform, decrypt };
 }
