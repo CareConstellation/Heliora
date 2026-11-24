@@ -11,7 +11,12 @@ import EncryptedChat from './EncryptedChat';
 import ReconnectionOverlay from './ReconnectionOverlay';
 import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
-import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
+import {
+  isPictureInPictureAvailable,
+  setupAutomatedReconnection,
+  toggleVideoPictureInPicture,
+  type ReconnectionManager,
+} from '@/lib/video';
 import {
   getSpeechRecognitionConstructor,
   summarizeClinicalEncounter,
@@ -65,6 +70,8 @@ export default function ConsultationView({
   });
   const reconnectionManagerRef = useRef<ReconnectionManager | null>(null);
   const [isAudioOnly, setIsAudioOnly] = useState(false);
+  const [isPiPAvailable, setIsPiPAvailable] = useState(false);
+  const [isNativePiPActive, setIsNativePiPActive] = useState(false);
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
@@ -326,6 +333,39 @@ export default function ConsultationView({
     return () => observer.disconnect();
   }, [splitRatio]);
 
+  /* ── Native Picture-in-Picture for the shared screen (#265) ───────── */
+  useEffect(() => {
+    setIsPiPAvailable(isPictureInPictureAvailable(document));
+  }, []);
+
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video || !screenStream) return;
+
+    const onEnter = () => setIsNativePiPActive(true);
+    const onLeave = () => setIsNativePiPActive(false);
+    video.addEventListener('enterpictureinpicture', onEnter);
+    video.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', onEnter);
+      video.removeEventListener('leavepictureinpicture', onLeave);
+      // The element may be gone, so the browser may not fire leavepictureinpicture.
+      setIsNativePiPActive(false);
+    };
+  }, [screenStream, isVideoMinimized]);
+
+  async function handleTogglePiP() {
+    const video = screenVideoRef.current;
+    if (!video) return;
+
+    try {
+      setIsNativePiPActive(await toggleVideoPictureInPicture(video, document));
+    } catch (err) {
+      console.warn('Picture-in-Picture request failed:', err);
+      setIsNativePiPActive(false);
+    }
+  }
+
   function handleScreenStart(stream: MediaStream) {
     setScreenStream(stream);
   }
@@ -421,6 +461,27 @@ export default function ConsultationView({
           >
             {isAnnotating ? 'Annotating' : 'Annotate'}
           </button>
+        )}
+
+        {/* Native PiP for the shared screen. The call itself runs in an embedded frame,
+            which the browser cannot pop out, so this control covers the screen share (#265). */}
+        {screenStream && !isVideoMinimized && isPiPAvailable && (
+          <button
+            type="button"
+            onClick={handleTogglePiP}
+            aria-pressed={isNativePiPActive}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+          >
+            {isNativePiPActive ? 'Exit Screen PiP' : 'Screen PiP'}
+          </button>
+        )}
+        {isNativePiPActive && (
+          <span
+            role="status"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-3xs font-semibold bg-green/10 text-green border border-green/20"
+          >
+            PiP active
+          </span>
         )}
 
         {/* End Consultation Button */}

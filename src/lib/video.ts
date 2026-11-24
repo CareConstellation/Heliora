@@ -952,3 +952,52 @@ export function startCallQualityReporter(
 
   return { flush, cleanup };
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   #265 — Picture-in-picture capability detection & toggle
+   ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * True when the document can use Picture-in-Picture. Browsers without the
+ * API, or with it disabled by policy, report false.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function isPictureInPictureAvailable(doc?: Document | null): boolean {
+  const target = doc ?? (typeof document !== 'undefined' ? document : null);
+  if (!target) return false;
+  return target.pictureInPictureEnabled === true && typeof target.exitPictureInPicture === 'function';
+}
+
+/**
+ * True when this video element can enter Picture-in-Picture right now.
+ * A missing `requestPictureInPicture` method keeps the control hidden.
+ */
+export function canVideoEnterPictureInPicture(
+  video: HTMLVideoElement | null | undefined,
+  doc?: Document | null,
+): boolean {
+  if (!video) return false;
+  return isPictureInPictureAvailable(doc) && typeof video.requestPictureInPicture === 'function';
+}
+
+/**
+ * Toggles Picture-in-Picture for one video element. Exits when that element is
+ * already the picture-in-picture element, otherwise requests it. Resolves true
+ * when the element is now in Picture-in-Picture.
+ *
+ * Audio is never muted or paused here, so two-way call audio keeps playing.
+ * Rejects when the browser refuses the request.
+ */
+export async function toggleVideoPictureInPicture(
+  video: HTMLVideoElement,
+  doc: Document = document,
+): Promise<boolean> {
+  if (doc.pictureInPictureElement === video) {
+    await doc.exitPictureInPicture();
+    return false;
+  }
+
+  await video.requestPictureInPicture();
+  return true;
+}

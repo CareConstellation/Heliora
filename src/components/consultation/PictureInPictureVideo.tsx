@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { isPictureInPictureAvailable, toggleVideoPictureInPicture } from '@/lib/video';
 
 interface Props {
   src?: string;
@@ -20,9 +21,7 @@ export default function PictureInPictureVideo({
   const [pipSupported, setPipSupported] = useState(false);
 
   useEffect(() => {
-    setPipSupported(
-      typeof document !== 'undefined' && 'pictureInPictureEnabled' in document,
-    );
+    setPipSupported(isPictureInPictureAvailable(document));
   }, []);
 
   useEffect(() => {
@@ -31,15 +30,13 @@ export default function PictureInPictureVideo({
     }
   }, [stream]);
 
+  // Native PiP keeps the element's audio playing, so two-way sound is unaffected (#265).
   const toggleNativePiP = useCallback(async () => {
     if (!videoRef.current) return;
 
     try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await videoRef.current.requestPictureInPicture();
-      }
+      const active = await toggleVideoPictureInPicture(videoRef.current, document);
+      setIsPiPActive(active);
     } catch {
       onToggleMinimize();
     }
@@ -58,7 +55,7 @@ export default function PictureInPictureVideo({
       video.removeEventListener('enterpictureinpicture', onEnter);
       video.removeEventListener('leavepictureinpicture', onLeave);
     };
-  }, []);
+  }, [src, stream]);
 
   if (src && !stream) {
     return (
@@ -93,6 +90,14 @@ export default function PictureInPictureVideo({
         playsInline
         className="w-full h-full object-contain bg-black"
       />
+      {isPiPActive && (
+        <span
+          role="status"
+          className="absolute top-2 left-2 rounded-md bg-green px-2 py-1 text-xs font-semibold text-[#030D09]"
+        >
+          PiP active
+        </span>
+      )}
       {pipSupported && (
         <button
           onClick={toggleNativePiP}
