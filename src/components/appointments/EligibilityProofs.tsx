@@ -15,10 +15,12 @@ import type { EligibilityKind, EligibilityProofToken } from '@/types';
 const LABELS: Record<EligibilityKind, string> = {
   age18: `Age ${MIN_CONSULTATION_AGE}+`,
   insurance: 'Active insurance',
+  vaccination: 'Vaccination compliance',
 };
-const CREDENTIAL_TYPE: Record<EligibilityKind, 'age' | 'insurance'> = {
+const CREDENTIAL_TYPE: Record<EligibilityKind, 'age' | 'insurance' | 'vaccination'> = {
   age18: 'age',
   insurance: 'insurance',
+  vaccination: 'vaccination',
 };
 
 interface Props {

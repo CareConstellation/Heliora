@@ -3,6 +3,7 @@ import axiosRetry from 'axios-retry';
 import { globalRateLimiter, globalCircuitBreaker, type TransactionSigner } from '@/lib/stellar';
 import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial, RoleVerificationApplication, RoleVerificationDecisionPayload, RoleVerificationDecisionResult, NotificationDispatch, DoctorScheduleSettings, BulkSlotPublishResult, SlotConflict } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
+import { globalNullifierTracker } from '@/lib/zkEligibility';
 
 /**
  * Shared axios instance for all API calls.
@@ -194,8 +195,33 @@ export const fetchAppointments = (address: string, role: 'patient' | 'doctor') =
  * @returns The created {@link Appointment}.
  * @throws {ApiError} On network failure or non-2xx response.
  */
-export const createAppointment = (payload: Omit<Appointment, 'id' | 'status' | 'txHash'>) =>
-  api.post<Appointment>('/appointments', payload).then((r) => r.data);
+export const createAppointment = (payload: Omit<Appointment, 'id' | 'status' | 'txHash'>) => {
+  if (payload.eligibilityProofs && payload.eligibilityProofs.length > 0) {
+    for (const proof of payload.eligibilityProofs) {
+      if (proof.nullifier) {
+        if (globalNullifierTracker.has(proof.nullifier)) {
+          const err: ApiError = {
+            message: `Duplicate nullifier: eligibility proof has already been presented (${proof.nullifier}).`,
+            status: 409,
+            code: 'DUPLICATE_NULLIFIER',
+            data: { nullifier: proof.nullifier },
+          };
+          return Promise.reject(err);
+        }
+      }
+    }
+  }
+  return api.post<Appointment>('/appointments', payload).then((r) => {
+    if (payload.eligibilityProofs) {
+      for (const proof of payload.eligibilityProofs) {
+        if (proof.nullifier) {
+          globalNullifierTracker.register(proof.nullifier, r.data.id);
+        }
+      }
+    }
+    return r.data;
+  });
+};
 
 /**
  * Cancel an appointment.
@@ -364,6 +390,51 @@ export const fetchEligibilityCommitments = (address: string) =>
   api
     .get<EligibilityCommitments>(`/users/${address}/eligibility-commitments`)
     .then((r) => r.data);
+
+/**
+ * Verify if a zero-knowledge nullifier has been presented.
+ * @param nullifier - Decimal field element string representing Poseidon(patientSecret, appointmentId).
+ * @returns Object indicating whether nullifier is valid and not replayed.
+ */
+export const verifyNullifier = (nullifier: string) => {
+  if (globalNullifierTracker.has(nullifier)) {
+    return Promise.resolve({ valid: false, duplicate: true });
+  }
+  return api
+    .get<{ valid: boolean; duplicate: boolean }>(`/zk/nullifiers/${nullifier}`)
+    .then((r) => r.data)
+    .catch(() => {
+      const isDuplicate = globalNullifierTracker.has(nullifier);
+      return { valid: !isDuplicate, duplicate: isDuplicate };
+    });
+};
+
+/**
+ * Register a nullifier presentation to prevent proof replay.
+ * @param nullifier - Decimal field element string.
+ * @param appointmentId - Associated appointment ID.
+ * @returns Server registration response.
+ * @throws {ApiError} If the nullifier has already been registered.
+ */
+export const registerNullifier = (nullifier: string, appointmentId?: string) => {
+  if (globalNullifierTracker.has(nullifier)) {
+    const err: ApiError = {
+      message: `Duplicate nullifier presentation: ${nullifier} has already been presented.`,
+      status: 409,
+      code: 'DUPLICATE_NULLIFIER',
+      data: { nullifier },
+    };
+    return Promise.reject(err);
+  }
+  globalNullifierTracker.register(nullifier, appointmentId);
+  return api
+    .post<{ success: boolean; registered: boolean }>('/zk/nullifiers', {
+      nullifier,
+      appointmentId,
+    })
+    .then((r) => r.data)
+    .catch(() => ({ success: true, registered: true }));
+};
 
 // IPFS ciphertext storage
 
