@@ -790,3 +790,39 @@ export interface HelioraPatient {
   preferredLanguage?: string;
 }
 
+/* ── Telemedicine consultation (#64, #66, #264, #270) ──────────── */
+
+export type ReconnectionState = 'connected' | 'reconnecting' | 'failed';
+
+export interface ReconnectionStatus {
+  state: ReconnectionState;
+  remainingSeconds: number;
+  attemptCount: number;
+  message?: string;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  speaker: 'doctor' | 'patient';
+  text: string;
+  isFinal: boolean;
+  timestamp: number;
+}
+
+export interface TranscriptionConsentState {
+  doctorConsented: boolean;
+  patientConsented: boolean;
+  isMutualConsent: boolean;
+}
+
+export interface ClinicalDraftNote {
+  appointmentId: string;
+  patientAddress: string;
+  generatedAt: string;
+  diagnosis: string;
+  notes: string;
+  /** Comma-separated medication names detected in the call transcript. */
+  prescription: string;
+  rawTranscripts: TranscriptSegment[];
+}
+

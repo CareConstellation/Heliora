@@ -3,6 +3,7 @@
 import React from 'react';
 import { Mic, ShieldCheck, CheckCircle2, Clock, X, Lock } from 'lucide-react';
 import type { TranscriptionConsentState } from '@/types';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 interface Props {
   consentState: TranscriptionConsentState;

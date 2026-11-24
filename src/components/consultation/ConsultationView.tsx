@@ -1,12 +1,29 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { CheckCircle2, Mic, PhoneOff } from 'lucide-react';
 import PictureInPictureVideo from './PictureInPictureVideo';
 import MedicalRecordPanel from './MedicalRecordPanel';
 import EncounterNotes from './EncounterNotes';
 import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
+import ReconnectionOverlay from './ReconnectionOverlay';
+import LiveSubtitles from './LiveSubtitles';
+import TranscriptionConsentModal from './TranscriptionConsentModal';
+import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
+import {
+  getSpeechRecognitionConstructor,
+  summarizeClinicalEncounter,
+  type ISpeechRecognition,
+  type ISpeechRecognitionEvent,
+} from '@/lib/transcription';
+import type {
+  ClinicalDraftNote,
+  ReconnectionStatus,
+  TranscriptSegment,
+  TranscriptionConsentState,
+} from '@/types';
 
 interface Props {
   appointmentId: string;
