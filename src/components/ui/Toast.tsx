@@ -1,8 +1,18 @@
 'use client';
 
-import { createContext, useCallback, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useEffect, useState, type ReactNode } from 'react';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
+
+export const TOAST_EVENT = 'heliora:toast';
+
+export function emitToast(message: string, type: ToastType = 'info', action?: ToastAction) {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(
+      new CustomEvent(TOAST_EVENT, { detail: { message, type, action } }),
+    );
+  }
+}
 
 /** Optional call-to-action rendered inside a toast (e.g. "Retry"). */
 export interface ToastAction {
@@ -46,6 +56,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     // Give action toasts a little longer so the user can actually click the action.
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), action ? 8000 : 4000);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<{ message: string; type?: ToastType; action?: ToastAction }>;
+      if (custom.detail?.message) {
+        toast(custom.detail.message, custom.detail.type ?? 'info', custom.detail.action);
+      }
+    };
+    window.addEventListener(TOAST_EVENT, handler);
+    return () => window.removeEventListener(TOAST_EVENT, handler);
+  }, [toast]);
 
   return (
     <ToastContext.Provider value={{ toast }}>

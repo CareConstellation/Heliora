@@ -1,5 +1,6 @@
 import axios, { type AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
+import { globalRateLimiter, globalCircuitBreaker, type TransactionSigner } from '@/lib/stellar';
 import type { MedicalRecord, ShareToken, Doctor, TimeSlot, Appointment, NewRecordPayload, EncryptedRecord, StaffMember, PatientAdmission, HospitalMetrics, ComplianceReport, BulkRecordImportRow, BulkImportResponse, EncounterNote, AvailabilityBufferConfig, Sep38Asset, Sep38InfoAsset, Sep38IndicativePrice, Sep38QuoteRequest, Sep38FirmQuote, AppointmentAttendance, SignedDisputeAttestation, SubsidyTier, EligibilityCommitments, RecordIpfsStorage, RecordKeyMaterial, RoleVerificationApplication, RoleVerificationDecisionPayload, RoleVerificationDecisionResult, NotificationDispatch, DoctorScheduleSettings, BulkSlotPublishResult, SlotConflict } from '@/types';
 import type { EnvelopeHeader, EnvelopeRecipient } from '@/lib/crypto';
 
@@ -47,7 +48,28 @@ const normalizeError = (error: AxiosError<{ message?: string; error?: string }>)
   return Promise.reject(normalizedError);
 };
 
-api.interceptors.response.use((response) => response, normalizeError);
+api.interceptors.request.use(async (config) => {
+  const state = globalCircuitBreaker.getState();
+  if (state === 'OPEN') {
+    throw new Error('Network request limit reached; cooling down...');
+  }
+  await globalRateLimiter.acquire(1);
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => {
+    globalCircuitBreaker.recordSuccess();
+    return response;
+  },
+  (error: AxiosError<{ message?: string; error?: string }>) => {
+    const status = error.response?.status;
+    if (status === 429 || status === 503) {
+      globalCircuitBreaker.recordFailure(status);
+    }
+    return normalizeError(error);
+  },
+);
 
 /**
  * Axios instance for SEP-38 anchor quote servers. Requests use absolute URLs from
@@ -668,4 +690,24 @@ export function getSlotConflicts(error: unknown): SlotConflict[] | null {
   if (apiError?.status !== 409) return null;
   const conflicts = (apiError.data as { conflicts?: unknown } | null)?.conflicts;
   return Array.isArray(conflicts) ? (conflicts as SlotConflict[]) : [];
+}
+
+/**
+ * Queries claimable balances for a patient from Horizon (#190).
+ */
+export async function fetchPatientClaimableBalances(patientAddress: string) {
+  const { queryClaimableBalances } = await import('@/lib/claimableBalance');
+  return queryClaimableBalances(patientAddress);
+}
+
+/**
+ * Claims an asynchronous insurance payout claimable balance (#190).
+ */
+export async function claimInsurancePayout(
+  balanceId: string,
+  claimantAddress: string,
+  signer: TransactionSigner,
+) {
+  const { claimClaimableBalance } = await import('@/lib/claimableBalance');
+  return claimClaimableBalance(balanceId, claimantAddress, signer);
 }

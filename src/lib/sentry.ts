@@ -385,6 +385,29 @@ export function traceHorizonCall<T>(
   });
 }
 
+/**
+ * Records Horizon node health status in Sentry telemetry.
+ * Captures latency, failure count, and alerts when consecutive failures mount.
+ */
+export function recordNodeHealthTelemetry(
+  endpointUrl: string,
+  health: { isHealthy: boolean; latency: number | null; failureCount: number; error?: string },
+) {
+  Sentry.addBreadcrumb({
+    category: 'stellar.horizon.health',
+    message: `Horizon node ${endpointUrl} is ${health.isHealthy ? 'healthy' : 'unhealthy'} (failures: ${health.failureCount}, latency: ${health.latency !== null ? Math.round(health.latency) : 'N/A'}ms)`,
+    level: health.isHealthy ? 'info' : 'warning',
+    data: { endpoint: endpointUrl, ...health },
+  });
+
+  if (!health.isHealthy && health.failureCount >= 3) {
+    Sentry.captureMessage(
+      `Horizon node failure threshold exceeded for ${endpointUrl}: ${health.error ?? 'Service unavailable'}`,
+      'warning',
+    );
+  }
+}
+
 /* ─── User context ──────────────────────────────────────────────────────── */
 
 export function setSentryUser(walletAddress: string, role: UserRole) {

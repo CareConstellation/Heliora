@@ -1,11 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type {
   InsuranceClaimRecord,
   InsurancePolicyRecord,
   ClaimStatus,
 } from '@/types';
+import {
+  queryClaimableBalances,
+  claimClaimableBalance,
+  type ClaimableBalanceRecord,
+} from '@/lib/claimableBalance';
+import { freighterSigner } from '@/lib/stellar';
+import { useWalletStore } from '@/store/useWalletStore';
+import { useToast } from '@/hooks/useToast';
 
 const ACTIVE_POLICY: InsurancePolicyRecord = {
   policyNumber: 'POL-HEL-882193',
@@ -138,6 +146,47 @@ export default function InsuranceClaims() {
   const [newProviderName, setNewProviderName] = useState('');
   const [newAmount, setNewAmount] = useState('');
   const [newServiceDate, setNewServiceDate] = useState('2026-05-21');
+
+  const { publicKey } = useWalletStore();
+  const { toast } = useToast();
+  const [claimableBalances, setClaimableBalances] = useState<ClaimableBalanceRecord[]>([]);
+  const [isLoadingBalances, setIsLoadingBalances] = useState(false);
+  const [claimingBalanceId, setClaimingBalanceId] = useState<string | null>(null);
+
+  const loadClaimableBalances = useCallback(async () => {
+    if (!publicKey) return;
+    try {
+      setIsLoadingBalances(true);
+      const balances = await queryClaimableBalances(publicKey);
+      setClaimableBalances(balances);
+    } catch {
+      // Ignored if offline or horizon unreachable
+    } finally {
+      setIsLoadingBalances(false);
+    }
+  }, [publicKey]);
+
+  useEffect(() => {
+    void loadClaimableBalances();
+  }, [loadClaimableBalances]);
+
+  async function handleClaimBalance(balanceId: string) {
+    if (!publicKey) {
+      toast('Connect wallet to claim insurance balance', 'error');
+      return;
+    }
+    try {
+      setClaimingBalanceId(balanceId);
+      const res = await claimClaimableBalance(balanceId, publicKey, freighterSigner);
+      toast(`Insurance payout claimed successfully! Tx: ${res.txHash.slice(0, 8)}…`, 'success');
+      await loadClaimableBalances();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to claim balance';
+      toast(msg, 'error');
+    } finally {
+      setClaimingBalanceId(null);
+    }
+  }
 
   function handleRefreshContractEvents() {
     setIsRefreshing(true);
@@ -291,6 +340,69 @@ export default function InsuranceClaims() {
             <span className="font-medium text-text-1">${policy.copayAmountUsd.toFixed(2)}</span>
           </div>
         </div>
+      </div>
+
+      {/* Claimable Horizon Balances Section (#190) */}
+      <div className="rounded-lg p-3.5 mb-4 bg-surface-inset border border-border text-xs">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-text-1">Asynchronous Insurance Payouts (Claimable Balances)</span>
+            <span className="text-2xs bg-primary-500/10 text-primary-400 px-2 py-0.5 rounded font-mono">
+              Horizon Balances
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={isLoadingBalances || !publicKey}
+            onClick={() => void loadClaimableBalances()}
+            className="text-2xs underline text-text-3 hover:text-text-1 disabled:opacity-50"
+          >
+            {isLoadingBalances ? 'Querying Horizon…' : 'Refresh Balances'}
+          </button>
+        </div>
+
+        {claimableBalances.length === 0 ? (
+          <p className="text-2xs text-text-3 italic">
+            {publicKey ? 'No pending asynchronous insurance payouts found for your wallet.' : 'Connect wallet to view claimable payouts.'}
+          </p>
+        ) : (
+          <div className="space-y-2 mt-2">
+            {claimableBalances.map((bal) => (
+              <div
+                key={bal.id}
+                className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-2.5 rounded bg-surface-card border border-border gap-2"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-text-1">
+                      {bal.amount} {bal.asset}
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        bal.isClaimable
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
+                      }`}
+                    >
+                      {bal.isClaimable ? 'Claimable Now' : 'Time-Locked'}
+                    </span>
+                  </div>
+                  <p className="text-2xs font-mono text-text-3 truncate max-w-xs mt-0.5">
+                    Balance ID: {bal.id.slice(0, 16)}…{bal.id.slice(-8)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!bal.isClaimable || claimingBalanceId === bal.id}
+                  onClick={() => void handleClaimBalance(bal.id)}
+                  className="btn-primary text-xs py-1 px-3 rounded font-medium disabled:opacity-50 shrink-0"
+                >
+                  {claimingBalanceId === bal.id ? 'Claiming…' : 'Claim Payout'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Claims List */}
