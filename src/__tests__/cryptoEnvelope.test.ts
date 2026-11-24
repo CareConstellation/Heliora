@@ -73,7 +73,9 @@ describe('streaming envelope encryption (#24)', () => {
     const chunks = Math.max(1, Math.ceil(size / ENVELOPE_CHUNK_BYTES));
     expect(body.size).toBe(size + chunks * 16); // one 16-byte GCM tag per 64 KiB chunk
     expect(header.chunkSize).toBe(ENVELOPE_CHUNK_BYTES);
-    expect(await decrypt(header, body, alice)).toEqual(plaintext);
+    const decrypted = await decrypt(header, body, alice);
+    expect(decrypted).toEqual(plaintext);
+    expect(Buffer.from(decrypted).equals(Buffer.from(plaintext))).toBe(true);
   });
 
   it('reports granular, monotonic progress ending at 100%', async () => {

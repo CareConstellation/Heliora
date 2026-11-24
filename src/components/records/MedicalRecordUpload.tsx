@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { encryptFile, exportKey, hashBuffer } from '@/lib/crypto';
+import { encryptFile, exportKey, hashBuffer, encryptFileToEnvelope, serializeEnvelope } from '@/lib/crypto';
 import { sanitizeFile, UnsafeFileError } from '@/lib/fileSanitizer';
 import { isSvgFile, sanitizeSvg, UnsafeSvgError } from '@/lib/svgSanitizer';
 import { computeCid } from '@/lib/ipfs';
@@ -11,11 +11,12 @@ import {
   uploadCiphertextToIpfs,
   uploadEncryptedRecord,
 } from '@/services/api.service';
+import { loadOrCreateRecipientKeyPair } from '@/lib/envelopeKeys';
 import { useToast } from '@/hooks/useToast';
 import type { EncryptedRecord } from '@/types';
 
 const ACCEPTED = ['application/pdf', 'image/jpeg', 'image/png', 'image/svg+xml', 'application/dicom'];
-const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_BYTES = 250 * 1024 * 1024; // 250 MB for streaming envelope imaging files
 // Browsers usually report DICOM scans with an empty MIME type; the sanitizer checks the real format from the bytes.
 const isAccepted = (file: File) =>
   ACCEPTED.includes(file.type) || /\.dcm$/i.test(file.name) || isSvgFile(file);
@@ -46,6 +47,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
   const [progress, setProgress] = useState<'idle' | 'sanitizing' | 'encrypting' | 'uploading'>(
     'idle',
   );
+  const [encryptPercent, setEncryptPercent] = useState<number>(0);
   const [threats, setThreats] = useState<string[]>([]);
 
   const mutation = useMutation({
@@ -67,16 +69,20 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
 
       // Encrypt
       setProgress('encrypting');
-      const { encryptedBuffer, iv, key } = await encryptFile(sanitized.file);
-      const exportedKey = await exportKey(key);
-      const contentHash = await hashBuffer(encryptedBuffer);
+      setEncryptPercent(0);
+      const recipientKeyPair = await loadOrCreateRecipientKeyPair(patientAddress);
+      const recipientPublicKey = await crypto.subtle.exportKey('jwk', recipientKeyPair.publicKey);
+      const envelope = await encryptFileToEnvelope(sanitized.file, [{ id: patientAddress, publicKey: recipientPublicKey }], (p) => setEncryptPercent(Math.round(p)));
+      const envelopeBlob = serializeEnvelope(envelope.header, envelope.body);
+      const encryptedBuffer = await envelopeBlob.arrayBuffer();
+      const contentHash = envelope.contentHash;
       const { cid } = await computeCid(new Uint8Array(encryptedBuffer));
 
       // Upload the ciphertext to IPFS; the pinning service must return the CID computed locally
       setProgress('uploading');
       const pinnedCid = await uploadCiphertextToIpfs(
         await createIpfsUploadUrl(),
-        new Blob([encryptedBuffer]),
+        envelopeBlob,
       );
       if (pinnedCid !== cid) {
         throw new Error(
@@ -90,14 +96,14 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       formData.append('fileType', sanitized.file.type);
       formData.append('contentHash', contentHash);
       formData.append('cid', cid);
-      formData.append('iv', new Blob([iv.buffer as ArrayBuffer]));
-      formData.append('exportedKey', new Blob([exportedKey as ArrayBuffer]));
+      formData.append('envelopeHeader', JSON.stringify(envelope.header));
 
       const record = await uploadEncryptedRecord(formData);
       return { record, removed: sanitized.removed };
     },
     onSuccess: ({ record, removed }) => {
       setProgress('idle');
+      setEncryptPercent(0);
       toast(
         removed.length > 0
           ? `Record encrypted and uploaded. Removed: ${removed.join(', ')}.`
@@ -111,6 +117,7 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
     },
     onError: (err: Error) => {
       setProgress('idle');
+      setEncryptPercent(0);
       if (err instanceof UnsafeFileError) setThreats(err.threats);
       else if (err instanceof UnsafeSvgError) setThreats(err.threats);
       toast(err.message || 'Upload failed. Please try again.', 'error');
@@ -130,17 +137,24 @@ export default function MedicalRecordUpload({ patientAddress, onUploaded }: Prop
       <p className="text-3xl mb-2">🔒</p>
       <p className="font-medium text-text-1">Upload Encrypted Medical Record</p>
       <p className="text-xs text-text-3 mt-1">
-        PDF, JPEG, PNG, SVG or DICOM · max 10 MB · sanitized, metadata stripped and encrypted before upload
+        PDF, JPEG, PNG, SVG or DICOM · max 250 MB · sanitized, metadata stripped and encrypted before upload
       </p>
 
       {progress !== 'idle' && (
-        <p className="mt-3 text-sm text-green animate-pulse">
-          {progress === 'sanitizing'
-            ? 'Removing identifying metadata…'
-            : progress === 'encrypting'
-              ? 'Encrypting file…'
-              : 'Uploading to IPFS…'}
-        </p>
+        <div className="mt-3">
+          <p className="text-sm text-green animate-pulse">
+            {progress === 'sanitizing'
+              ? 'Removing identifying metadata…'
+              : progress === 'encrypting'
+                ? `Encrypting file… ${encryptPercent}%`
+                : 'Uploading to IPFS…'}
+          </p>
+          {progress === 'encrypting' && (
+            <div className="mt-2 h-2 w-full rounded bg-surface-hover">
+              <div className="h-2 rounded bg-green transition-all" style={{ width: `${encryptPercent}%` }} />
+            </div>
+          )}
+        </div>
       )}
 
       {threats.length > 0 && (

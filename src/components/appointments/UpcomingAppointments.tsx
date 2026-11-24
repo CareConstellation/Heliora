@@ -11,10 +11,11 @@ import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import PreCallDiagnostic from '@/components/ui/PreCallDiagnostic';
 import WaitingRoom from '@/components/appointments/WaitingRoom';
 import DoctorAppointmentDrawer from '@/components/appointments/DoctorAppointmentDrawer';
+import PostVisitSurvey from '@/components/appointments/PostVisitSurvey';
 import { CancellationEstimateDisplay, calculateCancellationAmounts } from './CancellationPolicy';
 import type { Appointment } from '@/types';
 
-type AppointmentTab = 'upcoming' | 'canceled';
+type AppointmentTab = 'upcoming' | 'canceled' | 'completed';
 
 export default function UpcomingAppointments() {
   const { publicKey } = useWalletStore();
@@ -24,6 +25,7 @@ export default function UpcomingAppointments() {
   const [diagnosticAppt, setDiagnosticAppt] = useState<Appointment | null>(null);
   const [waitingRoomAppt, setWaitingRoomAppt] = useState<Appointment | null>(null);
   const [drawerAppt, setDrawerAppt] = useState<Appointment | null>(null);
+  const [surveyAppt, setSurveyAppt] = useState<Appointment | null>(null);
 
   const appointmentsQueryKey = ['patient-appointments', publicKey] as const;
 
@@ -57,8 +59,9 @@ export default function UpcomingAppointments() {
     appointments?.filter((a) => a.status !== 'cancelled' && a.status !== 'completed') ?? [];
 
   const canceled = appointments?.filter((a) => a.status === 'cancelled') ?? [];
+  const completed = appointments?.filter((a) => a.status === 'completed') ?? [];
 
-  const visibleAppointments = activeTab === 'upcoming' ? upcoming : canceled;
+  const visibleAppointments = activeTab === 'upcoming' ? upcoming : activeTab === 'canceled' ? canceled : completed;
 
   if (isLoading) return <div className="animate-pulse h-24 rounded-xl bg-surface-card" />;
 
@@ -114,19 +117,42 @@ export default function UpcomingAppointments() {
         >
           Canceled ({canceled.length})
         </button>
+        <button
+          type="button"
+          role="tab"
+          id="appointments-tab-completed"
+          aria-selected={activeTab === 'completed'}
+          aria-controls="appointments-tabpanel"
+          onClick={() => setActiveTab('completed')}
+          className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            activeTab === 'completed'
+              ? 'bg-surface-hover text-text-1'
+              : 'text-text-2 hover:text-text-1'
+          }`}
+        >
+          Completed ({completed.length})
+        </button>
       </div>
 
       <div
         role="tabpanel"
         id="appointments-tabpanel"
         aria-labelledby={
-          activeTab === 'upcoming' ? 'appointments-tab-upcoming' : 'appointments-tab-canceled'
+          activeTab === 'upcoming'
+            ? 'appointments-tab-upcoming'
+            : activeTab === 'canceled'
+              ? 'appointments-tab-canceled'
+              : 'appointments-tab-completed'
         }
         className="space-y-3"
       >
         {visibleAppointments.length === 0 ? (
           <p className="text-sm text-text-3 text-center py-4">
-            {activeTab === 'upcoming' ? 'No upcoming appointments.' : 'No canceled appointments.'}
+            {activeTab === 'upcoming'
+              ? 'No upcoming appointments.'
+              : activeTab === 'canceled'
+                ? 'No canceled appointments.'
+                : 'No completed appointments.'}
           </p>
         ) : (
           visibleAppointments.map((appt) => (
@@ -172,6 +198,15 @@ export default function UpcomingAppointments() {
                       Join Video Call
                     </button>
                   )}
+                {activeTab !== 'upcoming' && appt.status === 'completed' && (
+                  <button
+                    type="button"
+                    onClick={() => setSurveyAppt(appt)}
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-2 hover:bg-surface-hover hover:text-text-1 transition-colors"
+                  >
+                    Post-Visit Survey
+                  </button>
+                )}
                 {activeTab === 'upcoming' && (
                   <button
                     onClick={() => setAppointmentToCancel(appt)}
@@ -240,6 +275,9 @@ export default function UpcomingAppointments() {
       {/* Patient Intake Brief Drawer */}
       {drawerAppt && (
         <DoctorAppointmentDrawer appointment={drawerAppt} onClose={() => setDrawerAppt(null)} />
+      )}
+      {surveyAppt && (
+        <PostVisitSurvey appointment={surveyAppt} onClose={() => setSurveyAppt(null)} />
       )}
     </div>
   );

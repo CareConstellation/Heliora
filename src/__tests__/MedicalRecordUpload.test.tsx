@@ -12,6 +12,18 @@ jest.mock('@/lib/crypto', () => ({
   })),
   exportKey: jest.fn(async () => new Uint8Array(32).buffer),
   hashBuffer: jest.fn(async () => 'hash'),
+  encryptFileToEnvelope: jest.fn(async (_file: Blob, _recipients: unknown[], onProgress?: (p: number) => void) => {
+    onProgress?.(100);
+    return {
+      header: { version: 1 },
+      body: new Blob([new Uint8Array([9, 9, 9])]),
+      contentHash: 'hash',
+    };
+  }),
+  serializeEnvelope: jest.fn(() => new Blob([new Uint8Array([9, 9, 9])])),
+}));
+jest.mock('@/lib/envelopeKeys', () => ({
+  loadOrCreateRecipientKeyPair: jest.fn(async () => ({ publicKey: {} as CryptoKey, privateKey: {} as CryptoKey })),
 }));
 jest.mock('@/lib/ipfs', () => ({
   computeCid: jest.fn(async () => ({ cid: 'bafkreilocal', bytes: new Uint8Array() })),
@@ -57,10 +69,12 @@ describe('MedicalRecordUpload', () => {
     upload(scan);
 
     await waitFor(() => expect(uploadEncryptedRecord).toHaveBeenCalled());
-    expect(encryptFile).toHaveBeenCalledWith(clean);
+    const { encryptFileToEnvelope } = jest.requireMock('@/lib/crypto');
+    expect(encryptFileToEnvelope).toHaveBeenCalled();
     const form: FormData = uploadEncryptedRecord.mock.calls[0][0];
     expect(form.get('cid')).toBe('bafkreilocal');
     expect(form.get('encryptedFile')).toBeNull(); // ciphertext lives on IPFS, not in the backend upload
+    expect(form.get('envelopeHeader')).toContain('version');
     expect(mockToast).toHaveBeenCalledWith(
       'Record encrypted and uploaded. Removed: GPS location.',
       'success',
@@ -92,7 +106,8 @@ describe('MedicalRecordUpload', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Windows executable (MZ) hidden after the end of the image',
     );
-    expect(encryptFile).not.toHaveBeenCalled();
+    const { encryptFileToEnvelope } = jest.requireMock('@/lib/crypto');
+    expect(encryptFileToEnvelope).not.toHaveBeenCalled();
   });
 
   it('accepts DICOM files reported with an empty MIME type (#29)', async () => {
