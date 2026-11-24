@@ -700,3 +700,93 @@ export interface DecodedContractError {
   contractId?: string;
 }
 
+/* ─── HL7 FHIR R4 Patient Interoperability (#274) ────────────────── */
+
+export interface FHIRIdentifier {
+  use?: 'usual' | 'official' | 'temp' | 'secondary' | 'old';
+  system?: string;
+  value?: string;
+  type?: {
+    coding?: Array<{ system?: string; code?: string; display?: string }>;
+    text?: string;
+  };
+}
+
+export interface FHIRHumanName {
+  use?: 'usual' | 'official' | 'temp' | 'nickname' | 'anonymous' | 'old' | 'maiden';
+  text?: string;
+  family?: string;
+  given?: string[];
+  prefix?: string[];
+  suffix?: string[];
+}
+
+export interface FHIRContactPoint {
+  system?: 'phone' | 'fax' | 'email' | 'pager' | 'url' | 'sms' | 'other';
+  value?: string;
+  use?: 'home' | 'work' | 'temp' | 'old' | 'mobile';
+  rank?: number;
+}
+
+export interface FHIRAddress {
+  use?: 'home' | 'work' | 'temp' | 'old' | 'billing';
+  type?: 'postal' | 'physical' | 'both';
+  text?: string;
+  line?: string[];
+  city?: string;
+  district?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
+
+export interface FHIRPatient {
+  resourceType: 'Patient';
+  id?: string;
+  active?: boolean;
+  identifier?: FHIRIdentifier[];
+  name?: FHIRHumanName[];
+  telecom?: FHIRContactPoint[];
+  gender?: 'male' | 'female' | 'other' | 'unknown';
+  birthDate?: string;
+  deceasedBoolean?: boolean;
+  deceasedDateTime?: string;
+  address?: FHIRAddress[];
+  maritalStatus?: {
+    coding?: Array<{ system?: string; code: string; display?: string }>;
+    text?: string;
+  };
+  communication?: Array<{
+    language: {
+      coding?: Array<{ system?: string; code: string; display?: string }>;
+      text?: string;
+    };
+    preferred?: boolean;
+  }>;
+  [key: string]: unknown;
+}
+
+export interface HelioraPatientAddress {
+  line?: string[];
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
+
+export interface HelioraPatient {
+  id: string;
+  walletAddress?: string;
+  firstName: string;
+  lastName: string;
+  fullName?: string;
+  birthDate?: string;
+  gender?: 'male' | 'female' | 'other' | 'unknown';
+  active?: boolean;
+  phone?: string;
+  email?: string;
+  address?: HelioraPatientAddress;
+  maritalStatus?: string;
+  preferredLanguage?: string;
+}
+

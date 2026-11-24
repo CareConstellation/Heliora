@@ -1,4 +1,5 @@
-import type { MedicalRecord } from '@/types';
+import { z } from 'zod';
+import type { FHIRPatient, HelioraPatient, MedicalRecord } from '@/types';
 
 export interface FHIRValidationError {
   field: string;
@@ -187,4 +188,272 @@ export function convertRecordsToFHIRBundle(records: MedicalRecord[]): FHIRBundle
 
 export function exportFHIRBundle(bundle: FHIRBundle): string {
   return JSON.stringify(bundle, null, 2);
+}
+
+/* ─── HL7 FHIR R4 Patient Schemas & Bidirectional Converters (#274) ─── */
+
+export const HELIORA_STELLAR_SYSTEM = 'urn:heliora:stellar';
+
+const FHIR_DATE_REGEX = /^\d{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?)?$/;
+
+export const FHIRCodingSchema = z.object({
+  system: z.string().optional(),
+  code: z.string().min(1).optional(),
+  display: z.string().optional(),
+});
+
+export const FHIRCodeableConceptSchema = z.object({
+  coding: z.array(FHIRCodingSchema).optional(),
+  text: z.string().optional(),
+});
+
+export const FHIRIdentifierSchema = z.object({
+  use: z.enum(['usual', 'official', 'temp', 'secondary', 'old']).optional(),
+  system: z.string().optional(),
+  value: z.string().optional(),
+  type: FHIRCodeableConceptSchema.optional(),
+});
+
+export const FHIRHumanNameSchema = z.object({
+  use: z.enum(['usual', 'official', 'temp', 'nickname', 'anonymous', 'old', 'maiden']).optional(),
+  text: z.string().optional(),
+  family: z.string().optional(),
+  given: z.array(z.string()).optional(),
+  prefix: z.array(z.string()).optional(),
+  suffix: z.array(z.string()).optional(),
+});
+
+export const FHIRContactPointSchema = z.object({
+  system: z.enum(['phone', 'fax', 'email', 'pager', 'url', 'sms', 'other']).optional(),
+  value: z.string().optional(),
+  use: z.enum(['home', 'work', 'temp', 'old', 'mobile']).optional(),
+  rank: z.number().int().positive().optional(),
+});
+
+export const FHIRAddressSchema = z.object({
+  use: z.enum(['home', 'work', 'temp', 'old', 'billing']).optional(),
+  type: z.enum(['postal', 'physical', 'both']).optional(),
+  text: z.string().optional(),
+  line: z.array(z.string()).optional(),
+  city: z.string().optional(),
+  district: z.string().optional(),
+  state: z.string().optional(),
+  postalCode: z.string().optional(),
+  country: z.string().optional(),
+});
+
+export const FHIRPatientSchema = z
+  .object({
+    resourceType: z.literal('Patient'),
+    id: z.string().min(1).optional(),
+    active: z.boolean().optional(),
+    identifier: z.array(FHIRIdentifierSchema).optional(),
+    name: z.array(FHIRHumanNameSchema).optional(),
+    telecom: z.array(FHIRContactPointSchema).optional(),
+    gender: z.enum(['male', 'female', 'other', 'unknown']).optional(),
+    birthDate: z
+      .string()
+      .regex(FHIR_DATE_REGEX, 'birthDate must follow FHIR R4 date format (YYYY, YYYY-MM, or YYYY-MM-DD)')
+      .optional(),
+    deceasedBoolean: z.boolean().optional(),
+    deceasedDateTime: z.string().optional(),
+    address: z.array(FHIRAddressSchema).optional(),
+    maritalStatus: FHIRCodeableConceptSchema.optional(),
+    communication: z
+      .array(
+        z.object({
+          language: FHIRCodeableConceptSchema,
+          preferred: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .passthrough();
+
+export const HelioraPatientSchema = z.object({
+  id: z.string().min(1),
+  walletAddress: z.string().min(1).optional(),
+  firstName: z.string(),
+  lastName: z.string(),
+  fullName: z.string().optional(),
+  birthDate: z.string().regex(FHIR_DATE_REGEX).optional(),
+  gender: z.enum(['male', 'female', 'other', 'unknown']).optional(),
+  active: z.boolean().optional(),
+  phone: z.string().optional(),
+  email: z.string().email().optional(),
+  address: z
+    .object({
+      line: z.array(z.string()).optional(),
+      city: z.string().optional(),
+      state: z.string().optional(),
+      postalCode: z.string().optional(),
+      country: z.string().optional(),
+    })
+    .optional(),
+  maritalStatus: z.string().optional(),
+  preferredLanguage: z.string().optional(),
+});
+
+export interface FHIRPatientValidationResult {
+  valid: boolean;
+  data?: FHIRPatient;
+  errors: FHIRValidationError[];
+}
+
+/** Validates an unknown object against the HL7 FHIR R4 Patient schema. */
+export function validateFHIRPatient(resource: unknown): FHIRPatientValidationResult {
+  const result = FHIRPatientSchema.safeParse(resource);
+  if (result.success) {
+    return { valid: true, data: result.data as FHIRPatient, errors: [] };
+  }
+  const errors: FHIRValidationError[] = result.error.issues.map((issue) => ({
+    field: issue.path.length > 0 ? issue.path.join('.') : 'root',
+    message: issue.message,
+  }));
+  return { valid: false, errors };
+}
+
+/** Parses a JSON string or object into a validated HL7 FHIR R4 Patient resource. */
+export function parseFHIRPatient(input: string | Record<string, unknown>): FHIRPatient {
+  const raw = typeof input === 'string' ? JSON.parse(input) : input;
+  const validation = validateFHIRPatient(raw);
+  if (!validation.valid || !validation.data) {
+    const summary = validation.errors.map((e) => `${e.field}: ${e.message}`).join('; ');
+    throw new Error(`Invalid HL7 FHIR R4 Patient resource: ${summary}`);
+  }
+  return validation.data;
+}
+
+/** Converts an HL7 FHIR R4 Patient resource into a HelioraPatient model. */
+export function fhirPatientToHeliora(fhirPatient: FHIRPatient): HelioraPatient {
+  const parsed = parseFHIRPatient(fhirPatient);
+
+  const preferredName =
+    parsed.name?.find((n) => n.use === 'official') ??
+    parsed.name?.find((n) => n.use === 'usual') ??
+    parsed.name?.[0];
+
+  const firstName = preferredName?.given?.[0] ?? '';
+  const lastName = preferredName?.family ?? '';
+  const fullName =
+    preferredName?.text ?? ([...((preferredName?.given ?? [])), lastName].filter(Boolean).join(' ') || undefined);
+
+  const stellarIdentifier = parsed.identifier?.find((id) => id.system === HELIORA_STELLAR_SYSTEM);
+  const fallbackIdentifier = parsed.identifier?.[0];
+  const walletAddress = stellarIdentifier?.value ?? fallbackIdentifier?.value;
+
+  const phone = parsed.telecom?.find((t) => t.system === 'phone')?.value;
+  const email = parsed.telecom?.find((t) => t.system === 'email')?.value;
+
+  const primaryAddr = parsed.address?.find((a) => a.use === 'home') ?? parsed.address?.[0];
+  const address = primaryAddr
+    ? {
+        ...(primaryAddr.line ? { line: primaryAddr.line } : {}),
+        ...(primaryAddr.city ? { city: primaryAddr.city } : {}),
+        ...(primaryAddr.state ? { state: primaryAddr.state } : {}),
+        ...(primaryAddr.postalCode ? { postalCode: primaryAddr.postalCode } : {}),
+        ...(primaryAddr.country ? { country: primaryAddr.country } : {}),
+      }
+    : undefined;
+
+  const maritalStatus =
+    parsed.maritalStatus?.text ??
+    parsed.maritalStatus?.coding?.[0]?.display ??
+    parsed.maritalStatus?.coding?.[0]?.code;
+
+  const preferredComm =
+    parsed.communication?.find((c) => c.preferred) ?? parsed.communication?.[0];
+  const preferredLanguage =
+    preferredComm?.language.text ??
+    preferredComm?.language.coding?.[0]?.display ??
+    preferredComm?.language.coding?.[0]?.code;
+
+  return {
+    id: parsed.id ?? walletAddress ?? 'unknown',
+    ...(walletAddress ? { walletAddress } : {}),
+    firstName,
+    lastName,
+    ...(fullName ? { fullName } : {}),
+    ...(parsed.birthDate ? { birthDate: parsed.birthDate } : {}),
+    ...(parsed.gender ? { gender: parsed.gender } : {}),
+    ...(parsed.active !== undefined ? { active: parsed.active } : {}),
+    ...(phone ? { phone } : {}),
+    ...(email ? { email } : {}),
+    ...(address && Object.keys(address).length > 0 ? { address } : {}),
+    ...(maritalStatus ? { maritalStatus } : {}),
+    ...(preferredLanguage ? { preferredLanguage } : {}),
+  };
+}
+
+/** Converts a HelioraPatient model into an HL7 FHIR R4 Patient resource. */
+export function helioraToFhirPatient(patient: HelioraPatient): FHIRPatient {
+  const validated = HelioraPatientSchema.parse(patient);
+
+  const telecom: FHIRPatient['telecom'] = [];
+  if (validated.phone) {
+    telecom.push({ system: 'phone', value: validated.phone, use: 'mobile' });
+  }
+  if (validated.email) {
+    telecom.push({ system: 'email', value: validated.email, use: 'home' });
+  }
+
+  const fullName =
+    validated.fullName ?? ([validated.firstName, validated.lastName].filter(Boolean).join(' ') || undefined);
+
+  const fhir: FHIRPatient = {
+    resourceType: 'Patient',
+    id: validated.id,
+    active: validated.active ?? true,
+    ...(validated.walletAddress
+      ? {
+          identifier: [
+            {
+              use: 'official',
+              system: HELIORA_STELLAR_SYSTEM,
+              value: validated.walletAddress,
+            },
+          ],
+        }
+      : {}),
+    name: [
+      {
+        use: 'official',
+        family: validated.lastName,
+        given: validated.firstName ? [validated.firstName] : [],
+        ...(fullName ? { text: fullName } : {}),
+      },
+    ],
+    ...(telecom.length > 0 ? { telecom } : {}),
+    ...(validated.gender ? { gender: validated.gender } : {}),
+    ...(validated.birthDate ? { birthDate: validated.birthDate } : {}),
+    ...(validated.address
+      ? {
+          address: [
+            {
+              use: 'home',
+              ...validated.address,
+            },
+          ],
+        }
+      : {}),
+    ...(validated.maritalStatus
+      ? {
+          maritalStatus: {
+            text: validated.maritalStatus,
+          },
+        }
+      : {}),
+    ...(validated.preferredLanguage
+      ? {
+          communication: [
+            {
+              language: { text: validated.preferredLanguage },
+              preferred: true,
+            },
+          ],
+        }
+      : {}),
+  };
+
+  return fhir;
 }

@@ -426,3 +426,66 @@ export function captureError(error: Error, context?: Record<string, unknown>) {
 export function captureMessage(message: string, level: Sentry.SeverityLevel = 'info') {
   Sentry.captureMessage(scrubString(message), level);
 }
+
+/* ─── WebRTC Call Quality Telemetry (#272) ──────────────────────────────── */
+
+export const DROPPED_FRAMES_ALERT_THRESHOLD_PERCENT = 20;
+
+export interface CallQualityMetrics {
+  p95JitterMs: number;
+  p95RttMs: number;
+  avgRttMs: number;
+  packetLossPercent: number;
+  droppedFramesPercent: number;
+  sampleCount: number;
+  framesDecoded?: number;
+  framesDropped?: number;
+  qualityTier?: string;
+}
+
+/**
+ * Sends an anonymous WebRTC call quality transaction to Sentry and triggers a
+ * warning alert if dropped frames exceed 20%.
+ */
+export function reportCallQualityTelemetry(metrics: CallQualityMetrics): { alertTriggered: boolean } {
+  const attributes = scrubData({
+    'webrtc.jitter_p95_ms': metrics.p95JitterMs,
+    'webrtc.rtt_p95_ms': metrics.p95RttMs,
+    'webrtc.rtt_avg_ms': metrics.avgRttMs,
+    'webrtc.packet_loss_pct': metrics.packetLossPercent,
+    'webrtc.dropped_frames_pct': metrics.droppedFramesPercent,
+    'webrtc.sample_count': metrics.sampleCount,
+    ...(metrics.qualityTier ? { 'webrtc.quality_tier': metrics.qualityTier } : {}),
+  });
+
+  Sentry.startSpan(
+    {
+      name: 'telemedicine.call_quality',
+      op: 'webrtc.quality',
+      attributes,
+    },
+    (span) => {
+      for (const [key, val] of Object.entries(attributes)) {
+        if (typeof val === 'number' || typeof val === 'string') {
+          span.setAttribute(key, val);
+        }
+      }
+    },
+  );
+
+  const alertTriggered = metrics.droppedFramesPercent > DROPPED_FRAMES_ALERT_THRESHOLD_PERCENT;
+  if (alertTriggered) {
+    Sentry.addBreadcrumb({
+      category: 'webrtc.quality',
+      message: `Dropped frames (${metrics.droppedFramesPercent.toFixed(1)}%) exceeded ${DROPPED_FRAMES_ALERT_THRESHOLD_PERCENT}% threshold`,
+      level: 'warning',
+      data: attributes,
+    });
+    Sentry.captureMessage(
+      `WebRTC call quality degraded: dropped frames ${metrics.droppedFramesPercent.toFixed(1)}% exceeds ${DROPPED_FRAMES_ALERT_THRESHOLD_PERCENT}% threshold`,
+      'warning',
+    );
+  }
+
+  return { alertTriggered };
+}
