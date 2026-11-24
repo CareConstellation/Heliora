@@ -5,7 +5,13 @@ import { useRouter } from 'next/navigation';
 import { useWalletStore } from '@/store/useWalletStore';
 import { useAuthStore } from '@/store/authStore';
 import { queryOnChainRole, resolveRoleConflict } from '@/lib/sorobanRbac';
-import { detectRoleTampering, createRoleToken } from '@/lib/roleTokenSigning';
+import {
+  detectRoleTampering,
+  createRoleToken,
+  isRoleTokenRevoked,
+  isRoleTokenExpired,
+  type RoleToken,
+} from '@/lib/roleTokenSigning';
 import type { UserRole } from '@/types';
 
 interface Props {
@@ -46,12 +52,43 @@ export default function ProtectedRoute({ requiredRole, allowedRoles, children }:
 
     const verifyRole = async () => {
       try {
-        // Check for local storage tampering
+        // Check if role has been revoked on client or on chain
+        if (role && isRoleTokenRevoked(publicKey, role)) {
+          console.warn('[SECURITY] Role token has been revoked');
+          setRoleTrustLevel('tampered');
+          router.replace('/login');
+          return;
+        }
+
+        // Check for local storage tampering and expiration
         if (role && roleSignature) {
-          const token = createRoleToken(publicKey, role);
+          let token = createRoleToken(publicKey, role);
+          let rawSig = roleSignature;
+
+          try {
+            const parsed = JSON.parse(roleSignature);
+            if (parsed && typeof parsed === 'object') {
+              if ('token' in parsed && parsed.token) {
+                token = parsed.token;
+                rawSig = parsed.signature || roleSignature;
+              } else if ('expiresAt' in parsed) {
+                token = parsed as unknown as RoleToken;
+              }
+            }
+          } catch {
+            // roleSignature is a raw signature hex string
+          }
+
           const serverPublicKey = process.env.NEXT_PUBLIC_ROLE_VERIFICATION_KEY || '';
 
-          const isTampered = await detectRoleTampering(role, token, roleSignature, serverPublicKey);
+          if (isRoleTokenExpired(token)) {
+            console.warn('[SECURITY] Role token has expired');
+            setRoleTrustLevel('unverified');
+            router.replace('/login');
+            return;
+          }
+
+          const isTampered = await detectRoleTampering(role, token, rawSig, serverPublicKey);
 
           if (isTampered) {
             console.error('[SECURITY] Role tampering detected');

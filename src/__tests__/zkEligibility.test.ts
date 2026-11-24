@@ -73,6 +73,18 @@ describe('parseCredential', () => {
         '{"type":"insurance","policyNumber":"P-1","expiryDate":"2027-12-31","salt":"1","commitment":"2"}',
       ),
     ).toMatchObject({ type: 'insurance', policyNumber: 'P-1' });
+    expect(
+      parseCredential(
+        '{"type":"dosage","patientWeight":70,"dosage":500,"safeThreshold":20,"salt":"123","commitment":"456"}',
+      ),
+    ).toEqual({
+      type: 'dosage',
+      patientWeight: 70,
+      dosage: 500,
+      safeThreshold: 20,
+      salt: '123',
+      commitment: '456',
+    });
   });
 
   it.each([

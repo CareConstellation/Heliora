@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { createJSONStorage, persist, devtools, type StateStorage } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
 import { z } from 'zod';
 import { captureError } from '@/lib/sentry';
 import type { ShieldVerificationStatus, UserRole } from '@/types';
@@ -188,43 +189,93 @@ interface AuthState {
 }
 
 export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
-      walletAddress: null,
-      role: null,
-      isLoading: false,
-      roleSignature: null,
-      roleTrustLevel: 'unverified',
-      shieldStatus: null,
-      setWalletAddress: (address) => set({ walletAddress: address }),
-      setRole: (role, signature) => set({ role, roleSignature: signature || null }),
-      setIsLoading: (isLoading) => set({ isLoading }),
-      setRoleSignature: (signature) => set({ roleSignature: signature }),
-      setRoleTrustLevel: (level) => set({ roleTrustLevel: level }),
-      setShieldStatus: (shieldStatus) => set({ shieldStatus }),
-      clearAuth: () =>
-        set({
-          walletAddress: null,
-          role: null,
-          isLoading: false,
-          roleSignature: null,
-          roleTrustLevel: 'unverified',
-          shieldStatus: null,
+  devtools(
+    persist(
+      immer((set) => ({
+        walletAddress: null,
+        role: null,
+        isLoading: false,
+        roleSignature: null,
+        roleTrustLevel: 'unverified',
+        shieldStatus: null,
+        setWalletAddress: (address) =>
+          set(
+            (state) => {
+              state.walletAddress = address;
+            },
+            false,
+            'auth/setWalletAddress',
+          ),
+        setRole: (role, signature) =>
+          set(
+            (state) => {
+              state.role = role;
+              state.roleSignature = signature || null;
+            },
+            false,
+            'auth/setRole',
+          ),
+        setIsLoading: (isLoading) =>
+          set(
+            (state) => {
+              state.isLoading = isLoading;
+            },
+            false,
+            'auth/setIsLoading',
+          ),
+        setRoleSignature: (signature) =>
+          set(
+            (state) => {
+              state.roleSignature = signature;
+            },
+            false,
+            'auth/setRoleSignature',
+          ),
+        setRoleTrustLevel: (level) =>
+          set(
+            (state) => {
+              state.roleTrustLevel = level;
+            },
+            false,
+            'auth/setRoleTrustLevel',
+          ),
+        setShieldStatus: (shieldStatus) =>
+          set(
+            (state) => {
+              state.shieldStatus = shieldStatus;
+            },
+            false,
+            'auth/setShieldStatus',
+          ),
+        clearAuth: () =>
+          set(
+            (state) => {
+              state.walletAddress = null;
+              state.role = null;
+              state.isLoading = false;
+              state.roleSignature = null;
+              state.roleTrustLevel = 'unverified';
+              state.shieldStatus = null;
+            },
+            false,
+            'auth/clearAuth',
+          ),
+      })),
+      {
+        name: AUTH_STORAGE_KEY,
+        storage: createJSONStorage(() => validatedStorage),
+        partialize: (state) => ({
+          walletAddress: state.walletAddress,
+          role: state.role,
+          roleSignature: state.roleSignature,
         }),
-    }),
-    {
-      name: AUTH_STORAGE_KEY,
-      storage: createJSONStorage(() => validatedStorage),
-      partialize: (state) => ({
-        walletAddress: state.walletAddress,
-        role: state.role,
-        roleSignature: state.roleSignature,
-      }),
-      merge: (persistedState, currentState) => {
-        const result = authStateSchema.safeParse(persistedState);
-        if (!result.success) return currentState;
-        return { ...currentState, ...result.data };
+        merge: (persistedState, currentState) => {
+          const result = authStateSchema.safeParse(persistedState);
+          if (!result.success) return currentState;
+          return { ...currentState, ...result.data };
+        },
       },
-    },
+    ),
+    { name: 'AuthStore' },
   ),
 );

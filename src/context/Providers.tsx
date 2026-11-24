@@ -4,6 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { useState, useEffect, type ReactNode } from 'react';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ToastProvider } from '@/components/ui/Toast';
+import OfflineBanner from '@/components/ui/OfflineBanner';
 import { useAuthStore } from '@/store/authStore';
 import { setSentryUser, clearSentryUser } from '@/lib/sentry';
 import { useSessionSync } from '@/hooks/useSessionSync';
@@ -28,6 +29,20 @@ function SessionSyncProvider() {
   return null;
 }
 
+function ServiceWorkerRegistration() {
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .register('/service-worker.js')
+        .catch(() => {
+          // Non-fatal if unsupported or blocked by environment
+        });
+    }
+  }, []);
+
+  return null;
+}
+
 function QueryCacheCleanup() {
   useEffect(() => {
     return () => {
@@ -45,6 +60,8 @@ export function Providers({ children }: { children: ReactNode }) {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
+          <OfflineBanner />
+          <ServiceWorkerRegistration />
           <SentryUserSync />
           <SessionSyncProvider />
           <QueryCacheCleanup />
