@@ -7,10 +7,35 @@
  * - Vaccination compliance verification with clinic EdDSA signature and nullifiers
  * - IndexedDB artifact (.wasm and .zkey) caching with download progress
  * - Poseidon hashing and client-side nullifier anti-replay tracking
+ * - Clinician subspecialty credential proofs with in-circuit board signature (#223)
+ * - Financial-hardship fee tier proofs against the poverty guideline (#224)
+ * - Strict BN254 field-element validation of every circuit input (#225)
  */
 
 import { Buffer } from 'buffer';
-import type { EligibilityKind, EligibilityProofToken } from '@/types';
+import type {
+  ClinicianCredentialProofToken,
+  DeductibleProofToken,
+  EligibilityKind,
+  EligibilityProofToken,
+  FinancialHardshipProofToken,
+} from '@/types';
+import {
+  proveInWorker,
+  sha256Hex,
+  type ZkArtifactHashes,
+  type ZkProofProgress,
+  type ZkProveOptions,
+} from './zkWorker';
+import {
+  BN254_SCALAR_FIELD,
+  ZkInputValidationError,
+  arePublicSignalsCanonical,
+  assertBits,
+  assertFieldElement,
+  isFieldElement,
+  sanitizeCircuitInput,
+} from './zkInputValidation';
 import {
   SNARK_SCALAR_FIELD,
   toFieldElement,
@@ -22,7 +47,6 @@ import {
 } from '@/lib/crypto';
 import {
   indexedDbArtifactProvider,
-  createMemoryArtifactProvider,
   type ArtifactStorageProvider,
 } from '@/lib/encryptedLocalStore';
 
@@ -36,6 +60,15 @@ export {
   type PoseidonInput,
 };
 
+export {
+  BN254_SCALAR_FIELD,
+  ZkInputValidationError,
+  arePublicSignalsCanonical,
+  assertFieldElement,
+  isFieldElement,
+  sanitizeCircuitInput,
+};
+
 export const MIN_CONSULTATION_AGE = 18;
 export const DEFAULT_CIRCUIT_VERSION =
   process.env.NEXT_PUBLIC_ZK_CIRCUIT_VERSION || '1.0.0';
@@ -45,6 +78,9 @@ const CIRCUITS: Record<EligibilityKind, string> = {
   insurance: 'insurance_coverage',
   vaccination: 'vaccine_verification',
 };
+
+/** Circuit basename for the deductible proof (`circuits/insurance_deductible.circom`). */
+export const DEDUCTIBLE_CIRCUIT = 'insurance_deductible';
 
 /** Base URL serving `<circuit>.wasm`, `<circuit>.zkey` and `<circuit>.vkey.json`. */
 const ARTIFACTS_URL = (process.env.NEXT_PUBLIC_ZK_ARTIFACTS_URL || '/zk').replace(
@@ -148,6 +184,20 @@ export interface VaccinationCredential {
   nullifier?: string;
 }
 
+/**
+ * Insurer-provided deductible credential.
+ * `commitment` = Poseidon(policyId(policyNumber), spend, salt).
+ * `spend` and `deductible` are whole cents and must fit in 32 bits.
+ */
+export interface DeductibleCredential {
+  type: 'deductible';
+  policyNumber: string;
+  spend: number;
+  deductible: number;
+  salt: string;
+  commitment: string;
+}
+
 export type EligibilityCredential =
   | AgeCredential
   | InsuranceCredential
@@ -158,6 +208,22 @@ export type VaccinationProofToken = EligibilityProofToken;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const FIELD_ELEMENT = /^\d{1,78}$/;
 const UINT32_MAX = 2 ** 32 - 1;
+
+/** A credential field that must decode to a canonical BN254 field element (`0 ≤ x < r`). */
+const isCanonicalField = (v: string) => FIELD_ELEMENT.test(v) && isFieldElement(v);
+
+function cents(value: unknown, field: string): number {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > UINT32_MAX) {
+    throw new Error(`Invalid ${field}; expected whole cents below 2^32.`);
+  }
+  return n;
+}
+
+/** `true` when the spend covers the deductible. Both are whole cents below 2^32. */
+export function meetsDeductible(spend: number, deductible: number): boolean {
+  return cents(spend, 'spend') >= cents(deductible, 'deductible');
+}
 
 /** `YYYY-MM-DD` → YYYYMMDD integer (compares like calendar dates). */
 export function parseDate(value: string): number {
@@ -196,10 +262,16 @@ export function parseCredential(json: string): EligibilityCredential {
       ? v
       : null;
   };
+  // Salts and commitments must be canonical field elements: a value ≥ r would
+  // be reduced modulo r by the witness calculator and alias a different one.
+  const field = (key: string) => {
+    const v = text(key, FIELD_ELEMENT);
+    return v && isCanonicalField(v) ? v : null;
+  };
 
   if (c.type === 'age') {
-    const salt = text('salt', FIELD_ELEMENT);
-    const commitment = text('commitment', FIELD_ELEMENT);
+    const salt = field('salt');
+    const commitment = field('commitment');
     const birthDate = text('birthDate', ISO_DATE);
     if (salt && commitment && birthDate) {
       return { type: 'age', birthDate, salt, commitment };
@@ -207,8 +279,8 @@ export function parseCredential(json: string): EligibilityCredential {
   }
 
   if (c.type === 'insurance') {
-    const salt = text('salt', FIELD_ELEMENT);
-    const commitment = text('commitment', FIELD_ELEMENT);
+    const salt = field('salt');
+    const commitment = field('commitment');
     const policyNumber = text('policyNumber');
     const expiryDate = text('expiryDate', ISO_DATE);
     if (salt && commitment && policyNumber && expiryDate) {
@@ -223,6 +295,8 @@ export function parseCredential(json: string): EligibilityCredential {
     const sig = typeof c.signature === 'object' && c.signature !== null ? (c.signature as Record<string, unknown>) : null;
     const sigR8 = sig && Array.isArray(sig.R8) ? sig.R8 : null;
     const sigS = sig && typeof sig.S === 'string' ? sig.S : null;
+    const allField = (values: unknown[] | null) =>
+      !!values && values.every((v) => typeof v === 'string' && isCanonicalField(v));
 
     if (
       patientSecret &&
@@ -231,7 +305,10 @@ export function parseCredential(json: string): EligibilityCredential {
       clinicPk.length === 2 &&
       sigR8 &&
       sigR8.length === 2 &&
-      sigS
+      sigS &&
+      allField(clinicPk) &&
+      allField(sigR8) &&
+      isCanonicalField(sigS)
     ) {
       return {
         type: 'vaccination',
@@ -243,7 +320,7 @@ export function parseCredential(json: string): EligibilityCredential {
           R8: [String(sigR8[0]), String(sigR8[1])],
           S: sigS,
         },
-        commitment: typeof c.commitment === 'string' ? c.commitment : undefined,
+        ...(typeof c.commitment === 'string' ? { commitment: c.commitment } : {}),
       };
     }
   }
@@ -275,7 +352,7 @@ export class NullifierReplayError extends Error {
 
 export interface NullifierRecord {
   nullifier: string;
-  contextId?: string;
+  contextId?: string | undefined;
   timestamp: number;
 }
 
@@ -343,18 +420,29 @@ export interface ArtifactLoaderOptions {
   storageProvider?: ArtifactStorageProvider;
 }
 
+const artifact = (
+  circuit: string,
+  ext: 'wasm' | 'zkey' | 'vkey.json',
+  base = ARTIFACTS_URL,
+) => `${base}/${circuit}.${ext}`;
+
 const artifactUrl = (
   kind: EligibilityKind,
   ext: 'wasm' | 'zkey' | 'vkey.json',
   base = ARTIFACTS_URL,
-) => `${base}/${circuit}.${ext}`;
+) => artifact(CIRCUITS[kind], ext, base);
 
 export interface GenerateProofOptions extends ZkProveOptions {
   /** Overrides the pinned artifact digests (tests, or pins fetched at runtime). */
   expectedSha256?: ZkArtifactHashes;
 }
 
-/** Builds the job for the worker, enforcing pinned artifacts for `circuit`. */
+/**
+ * Builds the job for the worker, enforcing pinned artifacts for `circuit`.
+ * Every input signal is validated as a canonical BN254 field element first.
+ *
+ * @throws {ZkInputValidationError} if any signal is negative, malformed or ≥ r.
+ */
 function proveJob(
   circuit: string,
   input: Record<string, unknown>,
@@ -363,7 +451,7 @@ function proveJob(
 ) {
   return {
     circuit,
-    input,
+    input: sanitizeCircuitInput(input),
     wasmUrl: artifact(circuit, 'wasm', artifactsUrl),
     zkeyUrl: artifact(circuit, 'zkey', artifactsUrl),
     vkeyUrl: artifact(circuit, 'vkey.json', artifactsUrl),
@@ -642,6 +730,10 @@ export async function generateEligibilityProof(
     throw new Error('Unsupported credential type.');
   }
 
+  // Refuse out-of-field or malformed values before they reach the witness
+  // calculator, which would otherwise silently reduce them modulo r.
+  const sanitizedInput = sanitizeCircuitInput(input);
+
   const { groth16 } = await import('snarkjs');
   const wasmArtifact = await loadCircuitArtifact(kind, 'wasm', {
     ...options,
@@ -659,7 +751,7 @@ export async function generateEligibilityProof(
       zkeyArtifact instanceof ArrayBuffer ? new Uint8Array(zkeyArtifact) : zkeyArtifact;
 
     const { proof, publicSignals } = await groth16.fullProve(
-      input,
+      sanitizedInput,
       wasmInput as any,
       zkeyInput as any,
     );
@@ -673,7 +765,7 @@ export async function generateEligibilityProof(
       kind,
       proof,
       publicSignals,
-      nullifier: nullifierValue,
+      ...(nullifierValue !== undefined ? { nullifier: nullifierValue } : {}),
     };
   } catch (err) {
     if (!String((err as Error)?.message ?? err).includes('Assert Failed')) {
@@ -710,6 +802,11 @@ export async function verifyEligibilityProof(
   options?: VerificationOptions,
 ): Promise<boolean> {
   const tracker = options?.nullifierTracker ?? globalNullifierTracker;
+
+  // 0. Non-canonical public signals (≥ r, signed, padded) alias canonical ones
+  //    and would defeat the equality checks below.
+  if (!arePublicSignalsCanonical(token.publicSignals)) return false;
+  if (token.nullifier !== undefined && !isFieldElement(token.nullifier)) return false;
 
   // 1. Anti-Replay Nullifier Presentation Check
   if (token.nullifier) {
@@ -783,6 +880,511 @@ export async function verifyEligibilityProof(
     tracker.register(token.nullifier, options?.appointmentId);
   }
   return valid;
+}
+
+/* ── Groth16 helpers shared by the credential circuits below ─────── */
+
+async function proveCircuit(
+  circuit: string,
+  input: Record<string, unknown>,
+  artifactsUrl: string,
+  opts: GenerateProofOptions,
+) {
+  return proveInWorker(proveJob(circuit, input, artifactsUrl, opts.expectedSha256), opts);
+}
+
+async function groth16Verify(
+  circuit: string,
+  publicSignals: string[],
+  proof: unknown,
+  verificationKey?: object,
+): Promise<boolean> {
+  const vkey = verificationKey ?? (await loadVerificationKey(artifact(circuit, 'vkey.json')));
+  const { groth16 } = await import('snarkjs');
+  return groth16.verify(vkey, publicSignals, proof as Parameters<typeof groth16.verify>[2]);
+}
+
+const isAssertFailure = (err: unknown) =>
+  String((err as Error)?.message ?? err).includes('Assert Failed');
+
+type BabyJubPoint = [string, string];
+
+interface EdDSASignature {
+  R8: BabyJubPoint;
+  S: string;
+}
+
+/** Verifies an EdDSA-Poseidon signature with circomlibjs, mirroring `EdDSAPoseidonVerifier`. */
+async function verifyEdDSAPoseidon(
+  message: bigint,
+  signature: EdDSASignature,
+  publicKey: BabyJubPoint,
+): Promise<boolean> {
+  try {
+    const { buildEddsa } = await import('circomlibjs');
+    const eddsa = await buildEddsa();
+    const F = eddsa.F;
+    const point = (p: BabyJubPoint) => [
+      F.e(assertFieldElement(p[0], 'x')),
+      F.e(assertFieldElement(p[1], 'y')),
+    ];
+    return eddsa.verifyPoseidon(
+      F.e(message),
+      { R8: point(signature.R8), S: assertFieldElement(signature.S, 'S') },
+      point(publicKey),
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function eddsaKeyPair(privateKey: Uint8Array | Buffer | string) {
+  const { buildEddsa } = await import('circomlibjs');
+  const eddsa = await buildEddsa();
+  const privKey =
+    typeof privateKey === 'string'
+      ? Buffer.from(privateKey.replace(/^0x/, ''), 'hex')
+      : Buffer.from(privateKey);
+  const pub = eddsa.prv2pub(privKey);
+  return {
+    eddsa,
+    privKey,
+    publicKey: [eddsa.F.toString(pub[0]), eddsa.F.toString(pub[1])] as BabyJubPoint,
+  };
+}
+
+const parsePoint = (v: unknown): BabyJubPoint | null =>
+  Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'string' && isCanonicalField(x))
+    ? [v[0] as string, v[1] as string]
+    : null;
+
+const parseSignature = (v: unknown): EdDSASignature | null => {
+  if (typeof v !== 'object' || v === null) return null;
+  const sig = v as Record<string, unknown>;
+  const R8 = parsePoint(sig.R8);
+  return R8 && typeof sig.S === 'string' && isCanonicalField(sig.S) ? { R8, S: sig.S } : null;
+};
+
+/* ── Clinician Subspecialty Credential Proof (Issue #223) ────────── */
+
+/** Circuit basename (`circuits/clinician_credential.circom`). */
+export const CLINICIAN_CREDENTIAL_CIRCUIT = 'clinician_credential';
+
+/**
+ * Medical-board certification of a clinician in a subspecialty, signed by the
+ * board with EdDSA-Poseidon over BabyJubjub:
+ * `signature = sign(Poseidon(licenseId(licenseNumber), specialty(specialtyCode), expiryDate))`.
+ *
+ * `licenseNumber` (the state license ID) never leaves the device: the proof
+ * reveals only the subspecialty, the board's public key and the check date.
+ */
+export interface ClinicianCredential {
+  type: 'clinician';
+  licenseNumber: string;
+  /** Subspecialty identifier, e.g. a NUCC taxonomy code such as `207RC0000X`. */
+  specialtyCode: string;
+  expiryDate: string; // YYYY-MM-DD
+  issuerPublicKey: BabyJubPoint;
+  signature: EdDSASignature;
+}
+
+export type ClinicianCredentialFailure =
+  | 'expired'
+  | 'invalid-signature'
+  | 'wrong-issuer'
+  | 'wrong-specialty';
+
+export interface ClinicianCredentialCheck {
+  valid: boolean;
+  reason?: ClinicianCredentialFailure;
+}
+
+/** Encodes a state license number as a 248-bit field element (SHA-256, first 31 bytes). */
+export const licenseIdFromNumber = (licenseNumber: string): Promise<bigint> =>
+  policyIdFromNumber(licenseNumber);
+
+/**
+ * Encodes a subspecialty code as a field element: purely numeric codes are used
+ * as-is, anything else (e.g. NUCC `207RC0000X`) via SHA-256 truncated to 248 bits.
+ */
+export function specialtyCodeToField(specialtyCode: string | number): bigint {
+  return toFieldElement(typeof specialtyCode === 'number' ? specialtyCode : specialtyCode.trim());
+}
+
+async function clinicianMessage(
+  licenseNumber: string,
+  specialtyCode: string,
+  expiryDate: string,
+): Promise<bigint> {
+  return poseidonHashBigInt([
+    await licenseIdFromNumber(licenseNumber),
+    specialtyCodeToField(specialtyCode),
+    BigInt(parseDate(expiryDate)),
+  ]);
+}
+
+/** Board-side helper: issues a signed subspecialty credential. */
+export async function signClinicianCredential(
+  boardPrivateKey: Uint8Array | Buffer | string,
+  params: { licenseNumber: string; specialtyCode: string; expiryDate: string },
+): Promise<ClinicianCredential> {
+  if (!params.licenseNumber) throw new Error('licenseNumber is required.');
+  const { eddsa, privKey, publicKey } = await eddsaKeyPair(boardPrivateKey);
+  const msg = await clinicianMessage(params.licenseNumber, params.specialtyCode, params.expiryDate);
+  const sig = eddsa.signPoseidon(privKey, eddsa.F.e(msg));
+  return {
+    type: 'clinician',
+    licenseNumber: params.licenseNumber,
+    specialtyCode: params.specialtyCode,
+    expiryDate: params.expiryDate,
+    issuerPublicKey: publicKey,
+    signature: {
+      R8: [eddsa.F.toString(sig.R8[0]), eddsa.F.toString(sig.R8[1])],
+      S: sig.S.toString(),
+    },
+  };
+}
+
+/** Validates an untrusted clinician credential file. */
+export function parseClinicianCredential(json: string): ClinicianCredential {
+  const c = JSON.parse(json) as Record<string, unknown>;
+  const issuerPublicKey = parsePoint(c.issuerPublicKey);
+  const signature = parseSignature(c.signature);
+  if (
+    c.type === 'clinician' &&
+    typeof c.licenseNumber === 'string' &&
+    c.licenseNumber.length > 0 &&
+    typeof c.specialtyCode === 'string' &&
+    c.specialtyCode.trim().length > 0 &&
+    typeof c.expiryDate === 'string' &&
+    ISO_DATE.test(c.expiryDate) &&
+    issuerPublicKey &&
+    signature
+  ) {
+    return {
+      type: 'clinician',
+      licenseNumber: c.licenseNumber,
+      specialtyCode: c.specialtyCode,
+      expiryDate: c.expiryDate,
+      issuerPublicKey,
+      signature,
+    };
+  }
+  throw new Error('Unrecognised clinician credential.');
+}
+
+/**
+ * Off-circuit reference check with the same constraints as
+ * `clinician_credential.circom`. Used to fail fast with a clear reason before
+ * spending seconds on a proof that the circuit would reject anyway.
+ */
+export async function checkClinicianCredential(
+  credential: ClinicianCredential,
+  now = new Date(),
+  expected: { specialtyCode?: string; issuerPublicKey?: BabyJubPoint } = {},
+): Promise<ClinicianCredentialCheck> {
+  if (
+    expected.issuerPublicKey &&
+    (expected.issuerPublicKey[0] !== credential.issuerPublicKey[0] ||
+      expected.issuerPublicKey[1] !== credential.issuerPublicKey[1])
+  ) {
+    return { valid: false, reason: 'wrong-issuer' };
+  }
+  if (
+    expected.specialtyCode !== undefined &&
+    specialtyCodeToField(expected.specialtyCode) !== specialtyCodeToField(credential.specialtyCode)
+  ) {
+    return { valid: false, reason: 'wrong-specialty' };
+  }
+  if (parseDate(credential.expiryDate) < utcDateInt(now)) {
+    return { valid: false, reason: 'expired' };
+  }
+  const msg = await clinicianMessage(
+    credential.licenseNumber,
+    credential.specialtyCode,
+    credential.expiryDate,
+  );
+  if (!(await verifyEdDSAPoseidon(msg, credential.signature, credential.issuerPublicKey))) {
+    return { valid: false, reason: 'invalid-signature' };
+  }
+  return { valid: true };
+}
+
+/** Builds the (sanitised) witness input for `clinician_credential.circom`. */
+export async function buildClinicianCredentialInput(
+  credential: ClinicianCredential,
+  now = new Date(),
+) {
+  return sanitizeCircuitInput({
+    specialtyCode: specialtyCodeToField(credential.specialtyCode),
+    currentDate: assertBits(utcDateInt(now), 32, 'currentDate'),
+    issuerAx: credential.issuerPublicKey[0],
+    issuerAy: credential.issuerPublicKey[1],
+    licenseId: await licenseIdFromNumber(credential.licenseNumber),
+    expiryDate: assertBits(parseDate(credential.expiryDate), 32, 'expiryDate'),
+    sigR8x: credential.signature.R8[0],
+    sigR8y: credential.signature.R8[1],
+    sigS: credential.signature.S,
+  });
+}
+
+const CLINICIAN_FAILURE_MESSAGES: Record<ClinicianCredentialFailure, string> = {
+  expired: 'This board certification has expired.',
+  'invalid-signature': 'This credential was not signed by the certifying board (tampered or forged).',
+  'wrong-issuer': 'This credential was issued by a different certifying board.',
+  'wrong-specialty': 'This credential certifies a different subspecialty.',
+};
+
+/**
+ * Proves current board certification in `credential.specialtyCode`. Public
+ * signals are `[specialtyCode, currentDate, issuerAx, issuerAy]`; the license
+ * ID and exact expiry stay private.
+ */
+export async function generateClinicianCredentialProof(
+  credential: ClinicianCredential,
+  now = new Date(),
+  artifactsUrl = ARTIFACTS_URL,
+  opts: GenerateProofOptions = {},
+): Promise<ClinicianCredentialProofToken> {
+  const check = await checkClinicianCredential(credential, now);
+  if (!check.valid) throw new Error(CLINICIAN_FAILURE_MESSAGES[check.reason!]);
+  const input = await buildClinicianCredentialInput(credential, now);
+  try {
+    const { proof, publicSignals } = await proveCircuit(
+      CLINICIAN_CREDENTIAL_CIRCUIT,
+      input,
+      artifactsUrl,
+      opts,
+    );
+    return { kind: 'clinicianCredential', proof, publicSignals };
+  } catch (err) {
+    if (!isAssertFailure(err)) throw err;
+    throw new Error('This credential does not prove a current board certification.');
+  }
+}
+
+/**
+ * Verifies a clinician credential proof for the expected subspecialty and
+ * certifying board. The proof must have been generated for today (UTC) or
+ * later, so a stale proof made before the certification lapsed is rejected.
+ */
+export async function verifyClinicianCredentialProof(
+  token: ClinicianCredentialProofToken,
+  expected: { specialtyCode: string; issuerPublicKey: BabyJubPoint },
+  now = new Date(),
+  verificationKey?: object,
+): Promise<boolean> {
+  if (token.kind !== 'clinicianCredential') return false;
+  if (token.publicSignals.length !== 4 || !arePublicSignalsCanonical(token.publicSignals)) {
+    return false;
+  }
+  const [specialty, date, ax, ay] = token.publicSignals as [string, string, string, string];
+  if (BigInt(specialty) !== specialtyCodeToField(expected.specialtyCode)) return false;
+  if (ax !== expected.issuerPublicKey[0] || ay !== expected.issuerPublicKey[1]) return false;
+  if (BigInt(date) < BigInt(utcDateInt(now))) return false;
+  return groth16Verify(CLINICIAN_CREDENTIAL_CIRCUIT, token.publicSignals, token.proof, verificationKey);
+}
+
+/* ── Financial Hardship Fee Reduction Proof (Issue #224) ─────────── */
+
+/** Circuit basename (`circuits/financial_hardship.circom`). */
+export const FINANCIAL_HARDSHIP_CIRCUIT = 'financial_hardship';
+
+/** Subsidised fee tiers emitted by the circuit, keyed by maximum % of the poverty guideline. */
+export const HARDSHIP_TIERS = {
+  /** ≤ 100% of guideline: full fee waiver. */
+  full: 3,
+  /** ≤ 150% of guideline. */
+  partial: 2,
+  /** ≤ 200% of guideline. */
+  reduced: 1,
+} as const;
+
+export type SubsidizedTier = 1 | 2 | 3;
+
+/** Maximum household size the circuit accepts (`Num2Bits(6)`). */
+export const MAX_HOUSEHOLD_SIZE = 63;
+
+/** Poverty guideline parameters (whole dollars / year), e.g. HHS 2025 contiguous US: 15650 + 5500/person. */
+export interface PovertyGuideline {
+  base: number;
+  perPerson: number;
+}
+
+/**
+ * Income attestation from a trusted verifier (benefits office, tax authority).
+ * `commitment = Poseidon(householdIncome, householdSize, salt)`.
+ */
+export interface FinancialHardshipCredential {
+  type: 'financialHardship';
+  householdIncome: number; // whole dollars / year
+  householdSize: number;
+  salt: string;
+  commitment: string;
+}
+
+const uint = (value: unknown, bits: number, name: string): number => {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ZkInputValidationError(name, 'expected a non-negative whole number.');
+  }
+  assertBits(value, bits, name);
+  return value;
+};
+
+function checkGuideline(g: PovertyGuideline): PovertyGuideline {
+  return {
+    base: uint(g.base, 32, 'guidelineBase'),
+    perPerson: uint(g.perPerson, 32, 'guidelinePerPerson'),
+  };
+}
+
+function checkHouseholdSize(size: unknown): number {
+  const n = uint(size, 6, 'householdSize');
+  if (n < 1) throw new ZkInputValidationError('householdSize', 'a household has at least one person.');
+  return n;
+}
+
+/** Poverty guideline for a household of `size` people (whole dollars). */
+export function povertyThreshold(guideline: PovertyGuideline, size: number): bigint {
+  const g = checkGuideline(guideline);
+  return BigInt(g.base) + BigInt(g.perPerson) * BigInt(checkHouseholdSize(size) - 1);
+}
+
+/**
+ * Reference implementation of the circuit's tier logic. Returns `0` when the
+ * household is above 200% of the guideline (no proof can be produced).
+ */
+export function hardshipTier(
+  householdIncome: number,
+  householdSize: number,
+  guideline: PovertyGuideline,
+): SubsidizedTier | 0 {
+  const income = BigInt(uint(householdIncome, 32, 'householdIncome')) * 100n;
+  const threshold = povertyThreshold(guideline, householdSize);
+  if (income <= threshold * 100n) return 3;
+  if (income <= threshold * 150n) return 2;
+  if (income <= threshold * 200n) return 1;
+  return 0;
+}
+
+/** Verifier-side helper: computes the commitment to attest for a household. */
+export async function computeHardshipCommitment(
+  householdIncome: number,
+  householdSize: number,
+  salt: string | bigint,
+): Promise<string> {
+  return poseidonHash([
+    BigInt(uint(householdIncome, 32, 'householdIncome')),
+    BigInt(checkHouseholdSize(householdSize)),
+    assertFieldElement(salt, 'salt'),
+  ]);
+}
+
+/** Validates an untrusted financial-hardship credential file. */
+export function parseFinancialHardshipCredential(json: string): FinancialHardshipCredential {
+  const c = JSON.parse(json) as Record<string, unknown>;
+  if (
+    c.type === 'financialHardship' &&
+    typeof c.householdIncome === 'number' &&
+    typeof c.householdSize === 'number' &&
+    typeof c.salt === 'string' &&
+    isCanonicalField(c.salt) &&
+    typeof c.commitment === 'string' &&
+    isCanonicalField(c.commitment)
+  ) {
+    uint(c.householdIncome, 32, 'householdIncome');
+    checkHouseholdSize(c.householdSize);
+    return {
+      type: 'financialHardship',
+      householdIncome: c.householdIncome,
+      householdSize: c.householdSize,
+      salt: c.salt,
+      commitment: c.commitment,
+    };
+  }
+  throw new Error('Unrecognised financial hardship credential.');
+}
+
+/** Builds the (sanitised) witness input for `financial_hardship.circom`. */
+export function buildFinancialHardshipInput(
+  credential: FinancialHardshipCredential,
+  guideline: PovertyGuideline,
+) {
+  const g = checkGuideline(guideline);
+  return sanitizeCircuitInput({
+    householdIncome: uint(credential.householdIncome, 32, 'householdIncome'),
+    householdSize: checkHouseholdSize(credential.householdSize),
+    salt: credential.salt,
+    guidelineBase: g.base,
+    guidelinePerPerson: g.perPerson,
+    commitment: credential.commitment,
+  });
+}
+
+/**
+ * Proves the household income is at or below 200% of the poverty guideline
+ * without revealing income, household size or tax documents. Public signals
+ * are `[subsidizedTier, guidelineBase, guidelinePerPerson, commitment]`.
+ */
+export async function generateFinancialHardshipProof(
+  credential: FinancialHardshipCredential,
+  guideline: PovertyGuideline,
+  artifactsUrl = ARTIFACTS_URL,
+  opts: GenerateProofOptions = {},
+): Promise<FinancialHardshipProofToken> {
+  const input = buildFinancialHardshipInput(credential, guideline);
+  if (hardshipTier(credential.householdIncome, credential.householdSize, guideline) === 0) {
+    throw new Error('Household income is above 200% of the poverty guideline.');
+  }
+  if (
+    (await computeHardshipCommitment(
+      credential.householdIncome,
+      credential.householdSize,
+      credential.salt,
+    )) !== credential.commitment
+  ) {
+    throw new Error('This credential does not match its income attestation.');
+  }
+  try {
+    const { proof, publicSignals } = await proveCircuit(
+      FINANCIAL_HARDSHIP_CIRCUIT,
+      input,
+      artifactsUrl,
+      opts,
+    );
+    return { kind: 'financialHardship', proof, publicSignals };
+  } catch (err) {
+    if (!isAssertFailure(err)) throw err;
+    throw new Error('This credential does not prove financial hardship eligibility.');
+  }
+}
+
+/**
+ * Verifies a hardship proof against the attested commitment and the current
+ * guideline. Returns the proven subsidised tier, or `null` when invalid.
+ */
+export async function verifyFinancialHardshipProof(
+  token: FinancialHardshipProofToken,
+  expectedCommitment: string,
+  guideline: PovertyGuideline,
+  verificationKey?: object,
+): Promise<SubsidizedTier | null> {
+  if (token.kind !== 'financialHardship') return null;
+  if (token.publicSignals.length !== 4 || !arePublicSignalsCanonical(token.publicSignals)) {
+    return null;
+  }
+  const g = checkGuideline(guideline);
+  const [tier, base, perPerson, commitment] = token.publicSignals as [string, string, string, string];
+  if (commitment !== expectedCommitment) return null;
+  if (BigInt(base) !== BigInt(g.base) || BigInt(perPerson) !== BigInt(g.perPerson)) return null;
+  if (tier !== '1' && tier !== '2' && tier !== '3') return null;
+  const valid = await groth16Verify(
+    FINANCIAL_HARDSHIP_CIRCUIT,
+    token.publicSignals,
+    token.proof,
+    verificationKey,
+  );
+  return valid ? (Number(tier) as SubsidizedTier) : null;
 }
 
 /* ── QR Export Helpers for Vaccination Proofs ────────────────────── */
@@ -882,7 +1484,9 @@ export async function verifyAgeProofOnChain(
   opts: OnChainVerifyOptions,
 ): Promise<boolean> {
   if (token.kind !== 'age18') throw new Error('Only age-eligibility proofs can be verified on-chain.');
-  if (token.publicSignals.length !== 2) throw new Error('Malformed age-eligibility public signals.');
+  if (token.publicSignals.length !== 2 || !arePublicSignalsCanonical(token.publicSignals)) {
+    throw new ZkInputValidationError('publicSignals', 'malformed age-eligibility public signals.');
+  }
 
   const contractId = opts.contractId ?? ZK_VERIFIER_CONTRACT_ID;
   if (!contractId) throw new Error('NEXT_PUBLIC_ZK_VERIFIER_CONTRACT_ID is not configured.');

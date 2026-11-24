@@ -132,6 +132,27 @@ export interface DeductibleProofToken {
   publicSignals: string[];
 }
 
+/**
+ * Proof of current medical-board certification in a subspecialty.
+ * Public signals are `[specialtyCode, currentDate, issuerAx, issuerAy]`;
+ * the state license ID stays private.
+ */
+export interface ClinicianCredentialProofToken {
+  kind: 'clinicianCredential';
+  proof: unknown;
+  publicSignals: string[];
+}
+
+/**
+ * Proof that household income is within 200% of the poverty guideline.
+ * Public signals are `[subsidizedTier, guidelineBase, guidelinePerPerson, commitment]`.
+ */
+export interface FinancialHardshipProofToken {
+  kind: 'financialHardship';
+  proof: unknown;
+  publicSignals: string[];
+}
+
 export interface NewRecordPayload {
   patientAddress: string;
   diagnosis: string;

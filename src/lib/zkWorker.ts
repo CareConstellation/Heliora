@@ -19,6 +19,8 @@
  * runs inline, so callers get identical results at the cost of blocking.
  */
 
+import { createZkWorker } from './zkWorkerFactory';
+
 export interface ZkArtifactHashes {
   wasm: string;
   zkey: string;
@@ -202,7 +204,7 @@ function getWorker(): Worker | null {
   if (worker) return worker;
   if (typeof Worker === 'undefined') return null;
   try {
-    worker = new Worker(new URL('./zkWorker.ts', import.meta.url), { type: 'module' });
+    worker = createZkWorker();
   } catch {
     return null;
   }

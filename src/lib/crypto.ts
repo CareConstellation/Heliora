@@ -38,6 +38,7 @@
  * GCM's built-in authentication tag.
  */
 
+import { sha256 } from '@noble/hashes/sha2';
 import { captureMessage } from '@/lib/sentry';
 import { zeroMemory } from '@/lib/zeroMemory';
 
@@ -1178,7 +1179,7 @@ export function toFieldElement(input: PoseidonInput): bigint {
     const slice = input.subarray(0, 31);
     let val = 0n;
     for (let i = 0; i < slice.length; i++) {
-      val = (val << 8n) | BigInt(slice[i]);
+      val = (val << 8n) | BigInt(slice[i]!);
     }
     return val;
   }
@@ -1210,7 +1211,7 @@ export function toFieldElement(input: PoseidonInput): bigint {
     const slice = digest.subarray(0, 31);
     let val = 0n;
     for (let i = 0; i < slice.length; i++) {
-      val = (val << 8n) | BigInt(slice[i]);
+      val = (val << 8n) | BigInt(slice[i]!);
     }
     return val;
   }

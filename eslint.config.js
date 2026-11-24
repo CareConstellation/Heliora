@@ -16,6 +16,7 @@ export default tseslint.config(
     ignores: [
       '.next/**',
       'node_modules/**',
+      'circuits/node_modules/**',
       'out/**',
       'coverage/**',
       '*.config.js',       // postcss.config.js, jest.config.ts excluded below

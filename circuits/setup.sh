@@ -14,13 +14,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/zk"
 OUT="$ROOT/public/zk"
-PTAU="$BUILD/ppot_0080_10.ptau"
+# 2^14 = 16,384 constraints: room for the EdDSA circuits (vaccine_verification,
+# clinician_credential use ~5k each). `npm --prefix circuits run benchmark`
+# reports exact counts.
+PTAU="$BUILD/ppot_0080_14.ptau"
 SNARKJ="$ROOT/node_modules/.bin/snarkjs"
 mkdir -p "$BUILD" "$OUT"
 
-[ -f "$PTAU" ] || curl -fL -o "$PTAU" https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_10.ptau
+[ -f "$PTAU" ] || curl -fL -o "$PTAU" https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_14.ptau
 
-for circuit in age_eligibility insurance_coverage vaccine_verification; do
+CIRCUITS=(
+  age_eligibility
+  insurance_coverage
+  insurance_deductible
+  vaccine_verification
+  clinician_credential
+  financial_hardship
+)
+
+for circuit in "${CIRCUITS[@]}"; do
   circom "$ROOT/circuits/$circuit.circom" --r1cs --wasm -l "$ROOT/node_modules" -o "$BUILD"
   "$SNARKJ" groth16 setup "$BUILD/$circuit.r1cs" "$PTAU" "$BUILD/${circuit}_0000.zkey"
   "$SNARKJ" zkey contribute "$BUILD/${circuit}_0000.zkey" "$BUILD/${circuit}_0001.zkey" \
@@ -36,7 +48,7 @@ done
 echo
 echo '{'
 first=1
-for circuit in age_eligibility insurance_coverage insurance_deductible; do
+for circuit in "${CIRCUITS[@]}"; do
   wasm=$(sha256sum "$OUT/$circuit.wasm" | cut -d' ' -f1)
   zkey=$(sha256sum "$OUT/$circuit.zkey" | cut -d' ' -f1)
   vkey=$(sha256sum "$OUT/$circuit.vkey.json" | cut -d' ' -f1)
