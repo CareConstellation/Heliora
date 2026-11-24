@@ -1,5 +1,10 @@
 import type { Appointment, ReconnectionState, ReconnectionStatus } from '@/types';
-import { captureError, captureMessage } from '@/lib/sentry';
+import {
+  captureError,
+  captureMessage,
+  reportCallQualityTelemetry,
+  type CallQualityMetrics,
+} from '@/lib/sentry';
 
 const DAILY_DOMAIN = process.env.NEXT_PUBLIC_DAILY_DOMAIN || 'heliora';
 const DAILY_API_URL = process.env.NEXT_PUBLIC_DAILY_API_URL || '';
@@ -636,4 +641,190 @@ export function setupAutomatedReconnection(
     triggerIceRestart,
     restoreMediaTracks,
   };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   #272 — WebRTC packet statistics & call quality analytics reporter
+   ═══════════════════════════════════════════════════════════════════ */
+
+export interface WebRtcStatsSample {
+  timestamp: number;
+  jitterMs: number;
+  rttMs: number;
+  packetsReceived: number;
+  packetsLost: number;
+  framesDecoded: number;
+  framesDropped: number;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Computes the p-th percentile (0–100) using nearest-rank over a numeric array. */
+export function computePercentile(values: number[], percentile: number): number {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return 0;
+  const sorted = [...finite].sort((a, b) => a - b);
+  const clampedP = Math.max(0, Math.min(100, percentile));
+  if (clampedP === 0) return sorted[0]!;
+  const rank = Math.ceil((clampedP / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(sorted.length - 1, rank))]!;
+}
+
+/** Extracts a single WebRTC stats snapshot from an RTCStatsReport or iterable of stat records. */
+export function extractWebRtcStatsSample(
+  stats: RTCStatsReport | Iterable<Record<string, unknown>>,
+): WebRtcStatsSample {
+  let maxJitterMs = 0;
+  let rttMs = 0;
+  let packetsReceived = 0;
+  let packetsLost = 0;
+  let framesDecoded = 0;
+  let framesDropped = 0;
+  let timestamp = Date.now();
+
+  const visit = (report: Record<string, unknown>) => {
+    if (typeof report.timestamp === 'number' && Number.isFinite(report.timestamp)) {
+      timestamp = report.timestamp;
+    }
+
+    if (report.type === 'inbound-rtp') {
+      if (typeof report.jitter === 'number' && Number.isFinite(report.jitter)) {
+        maxJitterMs = Math.max(maxJitterMs, report.jitter * 1000);
+      }
+      if (typeof report.packetsReceived === 'number') packetsReceived += report.packetsReceived;
+      if (typeof report.packetsLost === 'number') packetsLost += Math.max(0, report.packetsLost);
+      if (typeof report.framesDecoded === 'number') framesDecoded += report.framesDecoded;
+      if (typeof report.framesDropped === 'number') framesDropped += report.framesDropped;
+    } else if (
+      report.type === 'candidate-pair' &&
+      (report.state === 'succeeded' || report.nominated === true) &&
+      typeof report.currentRoundTripTime === 'number'
+    ) {
+      rttMs = Math.max(rttMs, report.currentRoundTripTime * 1000);
+    } else if (
+      report.type === 'remote-inbound-rtp' &&
+      typeof report.roundTripTime === 'number' &&
+      rttMs === 0
+    ) {
+      rttMs = report.roundTripTime * 1000;
+    }
+  };
+
+  if (typeof (stats as RTCStatsReport).forEach === 'function') {
+    (stats as RTCStatsReport).forEach((r) => visit(r as unknown as Record<string, unknown>));
+  } else {
+    for (const r of stats as Iterable<Record<string, unknown>>) {
+      visit(r);
+    }
+  }
+
+  return {
+    timestamp,
+    jitterMs: round2(maxJitterMs),
+    rttMs: round2(rttMs),
+    packetsReceived,
+    packetsLost,
+    framesDecoded,
+    framesDropped,
+  };
+}
+
+/**
+ * Aggregates WebRTC stats samples into p95 jitter, p95/avg RTT, packet loss %,
+ * and dropped frames %. Cumulative counters use the latest sample snapshot.
+ */
+export function aggregateCallQualityMetrics(
+  samples: WebRtcStatsSample[],
+  qualityTier?: VideoQualityTier,
+): CallQualityMetrics {
+  if (samples.length === 0) {
+    return {
+      p95JitterMs: 0,
+      p95RttMs: 0,
+      avgRttMs: 0,
+      packetLossPercent: 0,
+      droppedFramesPercent: 0,
+      sampleCount: 0,
+      framesDecoded: 0,
+      framesDropped: 0,
+      ...(qualityTier ? { qualityTier } : {}),
+    };
+  }
+
+  const jitters = samples.map((s) => s.jitterMs);
+  const rtts = samples.map((s) => s.rttMs);
+  const avgRtt = rtts.reduce((sum, v) => sum + v, 0) / rtts.length;
+
+  const latest = samples[samples.length - 1]!;
+  const totalPackets = latest.packetsReceived + latest.packetsLost;
+  const packetLossPercent = totalPackets > 0 ? (latest.packetsLost / totalPackets) * 100 : 0;
+
+  const totalFrames = latest.framesDecoded + latest.framesDropped;
+  const droppedFramesPercent = totalFrames > 0 ? (latest.framesDropped / totalFrames) * 100 : 0;
+
+  return {
+    p95JitterMs: round2(computePercentile(jitters, 95)),
+    p95RttMs: round2(computePercentile(rtts, 95)),
+    avgRttMs: round2(avgRtt),
+    packetLossPercent: round2(Math.min(100, Math.max(0, packetLossPercent))),
+    droppedFramesPercent: round2(Math.min(100, Math.max(0, droppedFramesPercent))),
+    sampleCount: samples.length,
+    framesDecoded: latest.framesDecoded,
+    framesDropped: latest.framesDropped,
+    ...(qualityTier ? { qualityTier } : {}),
+  };
+}
+
+export interface CallQualityReporterOptions {
+  intervalMs?: number;
+  getQualityTier?: () => VideoQualityTier;
+  onReport?: (metrics: CallQualityMetrics) => void;
+}
+
+/**
+ * Periodically collects WebRTC `getStats()` samples and reports anonymous call
+ * quality metrics to Sentry when stopped (or via `flush()`).
+ */
+export function startCallQualityReporter(
+  peerConnection: RTCPeerConnection,
+  options: CallQualityReporterOptions = {},
+): { flush: () => CallQualityMetrics; cleanup: () => void } {
+  const { intervalMs = 5000, getQualityTier, onReport } = options;
+  const samples: WebRtcStatsSample[] = [];
+  let flushed = false;
+
+  const sampleNow = async () => {
+    try {
+      const stats = await peerConnection.getStats();
+      samples.push(extractWebRtcStatsSample(stats));
+    } catch {
+      // Ignore transient getStats errors while peerConnection is closing.
+    }
+  };
+
+  const handle = setInterval(() => {
+    void sampleNow();
+  }, intervalMs);
+  void sampleNow();
+
+  const flush = (): CallQualityMetrics => {
+    const metrics = aggregateCallQualityMetrics(samples, getQualityTier?.());
+    if (samples.length > 0) {
+      reportCallQualityTelemetry(metrics);
+      onReport?.(metrics);
+    }
+    flushed = true;
+    return metrics;
+  };
+
+  const cleanup = () => {
+    clearInterval(handle);
+    if (!flushed) {
+      flush();
+    }
+  };
+
+  return { flush, cleanup };
 }
