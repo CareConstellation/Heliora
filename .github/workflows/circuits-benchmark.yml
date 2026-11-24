@@ -1,0 +1,110 @@
+name: Circuit benchmarks
+
+# Compiles every circuit, reports constraint/wire counts and Groth16 proving
+# times, and fails when a circuit's constraint count grows by more than 10%
+# over the base commit (the PR base, or the previous commit on main).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'circuits/**'
+      - '.github/workflows/circuits-benchmark.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'circuits/**'
+      - '.github/workflows/circuits-benchmark.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: circuits-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CIRCOM_VERSION: v2.1.9
+  BENCH_REGRESSION_THRESHOLD: '0.10'
+
+jobs:
+  benchmark:
+    name: Constraints · Proving time
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: circuits/package-lock.json
+
+      - name: Install circom
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/circom" \
+            "https://github.com/iden3/circom/releases/download/${CIRCOM_VERSION}/circom-linux-amd64"
+          chmod +x "$RUNNER_TEMP/circom"
+          echo "CIRCOM=$RUNNER_TEMP/circom" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/circom" --version
+
+      - name: Install benchmark dependencies
+        working-directory: circuits
+        run: npm ci --no-audit --no-fund
+
+      - name: Cache Powers of Tau
+        uses: actions/cache@v4
+        with:
+          path: build/zk-bench/ptau
+          key: ppot-0080-${{ hashFiles('circuits/*.circom') }}
+          restore-keys: ppot-0080-
+
+      # Constraint counts of the base commit's circuits, measured with this
+      # commit's harness so the comparison does not depend on the base having it.
+      - name: Measure base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+             && git ls-tree -d --name-only "$BASE_SHA" circuits | grep -q circuits; then
+            mkdir -p "$RUNNER_TEMP/base"
+            git archive "$BASE_SHA" circuits | tar -x -C "$RUNNER_TEMP/base"
+            if ! npm --prefix circuits run benchmark -- --no-prove --no-baseline --no-summary \
+                   --circuits-dir "$RUNNER_TEMP/base/circuits" \
+                   --markdown "$RUNNER_TEMP/base/benchmark.md" \
+                   --json build/zk-bench/base-results.json; then
+              rm -f build/zk-bench/base-results.json
+              echo "::warning::Base commit circuits failed to compile; regression check skipped."
+            fi
+          else
+            echo "No base commit with circuits; regression check will be skipped."
+          fi
+
+      - name: Benchmark
+        run: |
+          if [ -f build/zk-bench/base-results.json ]; then
+            BASELINE_ARGS="--baseline build/zk-bench/base-results.json"
+          else
+            BASELINE_ARGS="--no-baseline"
+          fi
+          npm --prefix circuits run benchmark -- $BASELINE_ARGS \
+            --threshold "$BENCH_REGRESSION_THRESHOLD" \
+            --json build/zk-bench/results.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: circuit-benchmarks
+          path: |
+            build/zk-bench/benchmark.md
+            build/zk-bench/results.json
+            build/zk-bench/base-results.json
+          if-no-files-found: ignore
