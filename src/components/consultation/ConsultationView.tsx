@@ -8,6 +8,7 @@ import EncounterNotes from './EncounterNotes';
 import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
+import VideoGrid from './VideoGrid';
 import ReconnectionOverlay from './ReconnectionOverlay';
 import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
@@ -278,11 +279,9 @@ export default function ConsultationView({
   }, [appointmentId, patientAddress, transcripts, doctorName]);
 
   /* ── Existing Screen Share & Divider Logic ───────────────────────── */
-  useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream;
-    }
-  }, [screenStream]);
+  const handleScreenVideoElement = useCallback((_tileId: string, element: HTMLVideoElement | null) => {
+    screenVideoRef.current = element;
+  }, []);
 
   const handleDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -445,12 +444,9 @@ export default function ConsultationView({
             >
               {screenStream ? (
                 <div className="relative w-full h-full">
-                  <video
-                    ref={screenVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-contain bg-black"
+                  <VideoGrid
+                    tiles={[{ id: 'screen', label: 'Shared screen', stream: screenStream, muted: true }]}
+                    onVideoElement={handleScreenVideoElement}
                   />
                   {isAnnotating && (
                     <AnnotationCanvas

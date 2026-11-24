@@ -828,3 +828,125 @@ export function startCallQualityReporter(
 
   return { flush, cleanup };
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   #260 — iOS Safari autoplay recovery & tap-to-start fallback
+   ═══════════════════════════════════════════════════════════════════ */
+
+export type VideoPlaybackResult = 'playing' | 'blocked' | 'failed';
+
+/**
+ * Starts playback on a `<video>` element and classifies the outcome.
+ *
+ * iOS Safari (and other browsers) reject `play()` with `NotAllowedError` when
+ * playback is not allowed without a user gesture. That is reported as `'blocked'`
+ * so the UI can show a "Tap to Start Video" control. Any other rejection is
+ * `'failed'`.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export async function startVideoPlayback(video: HTMLVideoElement): Promise<VideoPlaybackResult> {
+  // iOS Safari only keeps media inline when the attribute is present on the element.
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  try {
+    await video.play();
+    return 'playing';
+  } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    return name === 'NotAllowedError' ? 'blocked' : 'failed';
+  }
+}
+
+export interface VideoPlaybackWatchOptions {
+  /** Consecutive failed resume attempts before giving up. Default: 5. */
+  maxRetries?: number;
+  /** Base delay between resume attempts; grows linearly per retry. Default: 1000 ms. */
+  retryDelayMs?: number;
+  /** Autoplay was refused; the UI should ask the viewer to tap to start. */
+  onBlocked?: () => void;
+  /** Resume kept failing after `maxRetries` attempts. */
+  onFailed?: () => void;
+  /** Playback resumed after an interruption. */
+  onResumed?: () => void;
+}
+
+/**
+ * Keeps a video element playing through interruptions that pause it without user
+ * action: an incoming phone call on iOS, the tab being backgrounded, or a network
+ * stall. When the element pauses, or the page becomes visible again while paused,
+ * it retries `play()` with linear backoff. A refused autoplay (`'blocked'`) stops
+ * automatic retries, because only a user gesture can resume it.
+ *
+ * Returns a cleanup function that removes every listener and pending timer.
+ *
+ * Time: O(1) per event. Space: O(1).
+ */
+export function watchVideoPlayback(
+  video: HTMLVideoElement,
+  options: VideoPlaybackWatchOptions = {},
+): () => void {
+  const { maxRetries = 5, retryDelayMs = 1000, onBlocked, onFailed, onResumed } = options;
+  let retries = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+
+  const hasSource = () => video.srcObject !== null || video.getAttribute('src') !== null;
+
+  const attempt = async () => {
+    timer = null;
+    if (stopped || !video.paused || !hasSource()) return;
+
+    const result = await startVideoPlayback(video);
+    if (stopped) return;
+
+    if (result === 'playing') {
+      retries = 0;
+      onResumed?.();
+      return;
+    }
+    if (result === 'blocked') {
+      onBlocked?.();
+      return;
+    }
+
+    retries += 1;
+    if (retries >= maxRetries) {
+      onFailed?.();
+      return;
+    }
+    schedule();
+  };
+
+  const schedule = () => {
+    if (stopped || timer !== null) return;
+    timer = setTimeout(() => {
+      void attempt();
+    }, retryDelayMs * Math.max(1, retries));
+  };
+
+  const onPause = () => {
+    if (!video.ended) schedule();
+  };
+
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible' && video.paused) {
+      schedule();
+    }
+  };
+
+  video.addEventListener('pause', onPause);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  return () => {
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    video.removeEventListener('pause', onPause);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
+}
