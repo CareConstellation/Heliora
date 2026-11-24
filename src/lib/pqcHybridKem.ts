@@ -142,9 +142,16 @@ async function exportX25519Public(key: CryptoKey): Promise<Uint8Array> {
 
 /* ── ML-KEM-768 dynamic import ────────────────────────────────────── */
 
-async function getMlKem() {
-  const { createMlKem768 } = await import('mlkem');
+let mlKemPromise: ReturnType<typeof loadMlKem> | null = null;
+
+async function loadMlKem() {
+  const { createMlKem768 } = await import(/* webpackChunkName: "pqc-mlkem" */ 'mlkem');
   return createMlKem768();
+}
+
+async function getMlKem() {
+  mlKemPromise ??= loadMlKem();
+  return mlKemPromise;
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */

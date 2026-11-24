@@ -99,6 +99,13 @@ const nextConfig = {
               chunks: 'all',
               priority: 40,
             },
+            pqc: {
+              name: 'vendor-pqc-mlkem',
+              test: /[\\/]node_modules[\\/](mlkem)[\\/]/,
+              chunks: 'async',
+              priority: 50,
+              reuseExistingChunk: true,
+            },
             commons: {
               name: 'commons',
               minChunks: 2,
