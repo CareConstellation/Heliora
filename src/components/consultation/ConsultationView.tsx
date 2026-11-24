@@ -30,11 +30,18 @@ import type {
   TranscriptionConsentState,
 } from '@/types';
 
+/** Reported to the parent when the doctor ends the call (#271). */
+export interface ConsultationEndPayload {
+  durationMs: number;
+  draft: ClinicalDraftNote;
+}
+
 interface Props {
   appointmentId: string;
   patientAddress: string;
   videoRoomUrl: string;
   doctorName: string;
+  onCallEnded?: (payload: ConsultationEndPayload) => void;
 }
 
 type Tab = 'records' | 'notes' | 'chat';
@@ -47,10 +54,17 @@ export default function ConsultationView({
   patientAddress,
   videoRoomUrl,
   doctorName,
+  onCallEnded,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const isDragging = useRef(false);
+  const callStartedAtRef = useRef<number | null>(null);
+
+  // Start the visit clock once the consultation is on screen (#271).
+  useEffect(() => {
+    callStartedAtRef.current = Date.now();
+  }, []);
 
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isVideoMinimized, setIsVideoMinimized] = useState(false);
@@ -283,7 +297,12 @@ export default function ConsultationView({
     );
     setDraftNote(note);
     setActiveTab('notes');
-  }, [appointmentId, patientAddress, transcripts, doctorName]);
+
+    onCallEnded?.({
+      durationMs: callStartedAtRef.current === null ? 0 : Date.now() - callStartedAtRef.current,
+      draft: note,
+    });
+  }, [appointmentId, patientAddress, transcripts, doctorName, onCallEnded]);
 
   /* ── Existing Screen Share & Divider Logic ───────────────────────── */
   useEffect(() => {
