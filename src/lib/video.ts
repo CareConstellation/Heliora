@@ -828,3 +828,28 @@ export function startCallQualityReporter(
 
   return { flush, cleanup };
 }
+
+/* ── Screen sharing (#258) ──────────────────────────────────────────────── */
+
+/**
+ * Starts sharing the screen on an active call: captures via
+ * `getDisplayMedia`, swaps it onto the connection's video sender with
+ * `replaceTrack` (no renegotiation), and restores `cameraTrack` automatically
+ * when the browser's native "Stop Sharing" banner ends the capture track.
+ * The UI panel that calls this is a larger follow-up.
+ */
+export async function startScreenShare(
+  pc: RTCPeerConnection,
+  cameraTrack: MediaStreamTrack,
+): Promise<MediaStreamTrack> {
+  const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  const [screenTrack] = displayStream.getVideoTracks();
+  const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+  if (!sender) throw new Error('No active video sender to share the screen onto');
+
+  await sender.replaceTrack(screenTrack);
+  screenTrack.onended = () => {
+    void sender.replaceTrack(cameraTrack);
+  };
+  return screenTrack;
+}
