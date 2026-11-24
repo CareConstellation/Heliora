@@ -272,5 +272,51 @@ export async function benchmarkOverhead(): Promise<{
   const ecdhPub = await crypto.subtle.exportKey('raw', ephemeral.publicKey);
   const ecdhCtBytes = ecdhPub.byteLength;
 
-  return { hybridEncapMs, hybridCtBytes, ecdhEncapMs, ecdhCtBytes };
+  /* ── PQC Digital Signature Infrastructure ──────────────────────────────── */
+
+import { generateDilithiumKeyPair, signDilithium, verifyDilithium, DilithiumKeyPair } from '@/lib/pdfSignature';
+
+export interface SignedPrescriptionMetadata {
+  physicianPublicKey: Uint8Array;
+  dilithiumSignature: Uint8Array;
+  payloadHash: Uint8Array;
+}
+
+/**
+ * Sign prescription metadata with the physician's Dilithium private key.
+ * The signature is bound to the payload hash for integrity protection.
+ */
+export function signPrescriptionMetadata(
+  payload: Uint8Array,
+  physicianPrivateKey: Uint8Array,
+): SignedPrescriptionMetadata {
+  const payloadHash = crypto.subtle.digest('SHA-256', payload);
+  const signature = signDilithium(payload, physicianPrivateKey);
+  return {
+    physicianPublicKey: new Uint8Array(1312), // Dilithium-5 public key size placeholder
+    dilithiumSignature: signature,
+    payloadHash,
+  };
+}
+
+/**
+ * Verify a prescription signature using the physician's public key.
+ */
+export function verifyPrescriptionSignature(
+  payload: Uint8Array,
+  signedMetadata: SignedPrescriptionMetadata,
+  physicianPublicKey: Uint8Array,
+): boolean {
+  const expectedHash = crypto.subtle.digest('SHA-256', payload);
+  if (!MessageDigestEquals(signedMetadata.payloadHash, expectedHash)) return false;
+  return verifyDilithium(payload, signedMetadata.dilithiumSignature, physicianPublicKey);
+}
+
+/* ── Helper: compare two Uint8Array digests ──────────────────────────── */
+
+function MessageDigestEquals(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let eq = 0;
+  for (let i = 0; i < a.length; i++) eq |= a[i] ^ b[i];
+  return eq === 0;
 }

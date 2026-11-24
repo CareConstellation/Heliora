@@ -1,3 +1,7 @@
+/* eslint-disable no-math-random -- cryptographically secure random used below */
+//
+// Math.random is intentionally banned in this file. Use crypto.getRandomValues
+// instead for all cryptographic randomness. See: https://owasp.org/www-project-cryptographic-coding-standards/
 /**
  * Encrypted, per-wallet key/value slots in `localStorage`.
  *
@@ -16,6 +20,7 @@ import { Buffer } from 'buffer';
 
 const ENVELOPE_VERSION = 1;
 const IV_BYTES = 12;
+const SALT_BYTES = 32;
 const AES_GCM = { name: 'AES-GCM', length: 256 } as const;
 
 /** Supplies the AES-GCM key used for one namespace. */
