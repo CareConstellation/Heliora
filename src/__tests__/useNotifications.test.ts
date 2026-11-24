@@ -3,6 +3,10 @@
  * EventSource is mocked since it's a browser API.
  */
 
+import { renderHook, act } from '@testing-library/react';
+import { useNotifications } from '@/hooks/useNotifications';
+import { eventManager, EventType } from '@/lib/contractEventListener';
+
 const mockClose = jest.fn();
 const mockAddEventListener = jest.fn();
 
@@ -89,4 +93,35 @@ describe('Notification event shapes', () => {
     expect(event).toHaveProperty('message');
     expect(event).toHaveProperty('timestamp');
   });
+
+  it('receives on-chain contract events via eventManager', () => {
+    const onNotification = jest.fn();
+    const { result } = renderHook(() =>
+      useNotifications({ address: 'GUSER_ADDRESS', onNotification }),
+    );
+
+    act(() => {
+      eventManager.dispatchEvent({
+        id: 'contract-event-1',
+        type: EventType.AppointmentBooked,
+        contractId: 'CAPPOINTMENT_CONTRACT',
+        ledgerSequence: 1005,
+        transactionHash: '0xhash1',
+        timestamp: Date.now(),
+        data: {},
+        processedAt: Date.now(),
+      });
+    });
+
+    expect(result.current.unreadCount).toBe(1);
+    expect(result.current.notifications).toHaveLength(1);
+    expect(result.current.notifications[0]?.type).toBe('appointment_confirmed');
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'contract-event-1',
+        type: 'appointment_confirmed',
+      }),
+    );
+  });
 });
+

@@ -17,7 +17,10 @@ import api, {
   fetchComplianceReports,
   bulkUpdateStaff,
   bulkImportRecords,
+  verifyNullifier,
+  registerNullifier,
 } from '@/services/api.service';
+import { globalNullifierTracker } from '@/lib/zkEligibility';
 
 // `var` keeps these hoisted above the jest.mock factory, which runs before imports.
 // eslint-disable-next-line no-var
@@ -194,6 +197,69 @@ describe('api.service unit tests', () => {
       const res = await createAppointment(payload);
       expect(api.post).toHaveBeenCalledWith('/appointments', payload);
       expect(res).toEqual(mockRes);
+    });
+
+    it('createAppointment rejects duplicate nullifier presentation (#215)', async () => {
+      const nullifier = 'test-nullifier-998877';
+      globalNullifierTracker.clear();
+
+      const payloadWithProof = {
+        doctorId: 'doc1',
+        datetime: '2026-12-01T10:00:00Z',
+        patientAddress: 'G123',
+        type: 'in-person' as const,
+        fee: 50,
+        eligibilityProofs: [
+          {
+            kind: 'age18' as const,
+            proof: {},
+            publicSignals: ['20081020', 'comm'],
+            nullifier,
+          },
+        ],
+      };
+
+      (api.post as jest.Mock).mockResolvedValueOnce({
+        data: { id: 'app-first', ...payloadWithProof, status: 'confirmed' },
+      });
+
+      // 1. First presentation succeeds
+      const first = await createAppointment(payloadWithProof);
+      expect(first.id).toBe('app-first');
+      expect(globalNullifierTracker.has(nullifier)).toBe(true);
+
+      // 2. Duplicate presentation is rejected before network call
+      await expect(createAppointment(payloadWithProof)).rejects.toMatchObject({
+        code: 'DUPLICATE_NULLIFIER',
+        status: 409,
+      });
+    });
+
+    it('verifyNullifier checks unspent vs replayed nullifiers (#215)', async () => {
+      globalNullifierTracker.clear();
+      (api.get as jest.Mock).mockResolvedValueOnce({ data: { valid: true, duplicate: false } });
+
+      const check1 = await verifyNullifier('unspent-nullifier-1');
+      expect(check1.valid).toBe(true);
+      expect(check1.duplicate).toBe(false);
+
+      globalNullifierTracker.register('unspent-nullifier-1');
+      const check2 = await verifyNullifier('unspent-nullifier-1');
+      expect(check2.valid).toBe(false);
+      expect(check2.duplicate).toBe(true);
+    });
+
+    it('registerNullifier rejects duplicate presentation (#215)', async () => {
+      globalNullifierTracker.clear();
+      (api.post as jest.Mock).mockResolvedValueOnce({ data: { success: true, registered: true } });
+
+      const reg1 = await registerNullifier('nullifier-alpha', 'apt-101');
+      expect(reg1.registered).toBe(true);
+
+      await expect(registerNullifier('nullifier-alpha', 'apt-102')).rejects.toMatchObject({
+        code: 'DUPLICATE_NULLIFIER',
+        status: 409,
+      });
     });
 
     it('cancelAppointment calls PATCH /appointments/:id/cancel', async () => {

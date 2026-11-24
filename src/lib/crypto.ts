@@ -39,6 +39,7 @@
  */
 
 import { captureMessage } from '@/lib/sentry';
+import { zeroMemory } from '@/lib/zeroMemory';
 
 export class CryptographicFaultError extends Error {
   constructor(message: string) {
@@ -266,13 +267,14 @@ async function deriveBackupKey(
   salt: Uint8Array<ArrayBuffer>,
   iterations: number,
 ): Promise<CryptoKey> {
-  const material = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(passphrase.normalize('NFKD')),
-    'PBKDF2',
-    false,
-    ['deriveKey'],
-  );
+  // The encoded passphrase is key material: wipe it as soon as it is imported.
+  const passphraseBytes = new TextEncoder().encode(passphrase.normalize('NFKD'));
+  let material: CryptoKey;
+  try {
+    material = await crypto.subtle.importKey('raw', passphraseBytes, 'PBKDF2', false, ['deriveKey']);
+  } finally {
+    zeroMemory(passphraseBytes);
+  }
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
     material,
@@ -1132,3 +1134,152 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
+
+/* ── Poseidon Hashing for Zero-Knowledge Commitments & Nullifiers ── */
+
+/**
+ * BN254 / alt_bn128 scalar field modulus r (order of the subgroup).
+ * Circom Poseidon constraints and SNARK inputs must strictly be field elements < r.
+ */
+export const SNARK_SCALAR_FIELD =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+export type PoseidonInput = bigint | number | string | Uint8Array;
+
+/**
+ * Converts an arbitrary input (decimal string, hex string, UTF-8 text, number, bigint, or bytes)
+ * into a valid BN254 scalar field element strictly less than {@link SNARK_SCALAR_FIELD}.
+ *
+ * For non-numeric strings, it deterministically computes SHA-256 and takes the first 31 bytes
+ * (248 bits, big-endian), which is guaranteed to be < 2^248 < SNARK_SCALAR_FIELD.
+ */
+export function toFieldElement(input: PoseidonInput): bigint {
+  if (typeof input === 'bigint') {
+    if (input < 0n || input >= SNARK_SCALAR_FIELD) {
+      throw new RangeError(
+        `BigInt input ${input.toString()} is outside the BN254 scalar field range [0, ${SNARK_SCALAR_FIELD - 1n}].`,
+      );
+    }
+    return input;
+  }
+
+  if (typeof input === 'number') {
+    if (!Number.isInteger(input) || input < 0) {
+      throw new RangeError(`Number input ${input} must be a non-negative integer.`);
+    }
+    const b = BigInt(input);
+    if (b >= SNARK_SCALAR_FIELD) {
+      throw new RangeError(`Number input ${input} exceeds the BN254 scalar field order.`);
+    }
+    return b;
+  }
+
+  if (input instanceof Uint8Array) {
+    const slice = input.subarray(0, 31);
+    let val = 0n;
+    for (let i = 0; i < slice.length; i++) {
+      val = (val << 8n) | BigInt(slice[i]);
+    }
+    return val;
+  }
+
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const b = BigInt(trimmed);
+      if (b >= SNARK_SCALAR_FIELD) {
+        throw new RangeError(
+          `Decimal string "${trimmed}" exceeds the BN254 scalar field order.`,
+        );
+      }
+      return b;
+    }
+
+    if (/^0x[0-9a-fA-F]+$/i.test(trimmed)) {
+      const b = BigInt(trimmed);
+      if (b >= SNARK_SCALAR_FIELD) {
+        throw new RangeError(
+          `Hex string "${trimmed}" exceeds the BN254 scalar field order.`,
+        );
+      }
+      return b;
+    }
+
+    // For arbitrary text (e.g. UUID, address, clinical notes), derive 248-bit element via SHA-256
+    const digest = sha256(new TextEncoder().encode(trimmed));
+    const slice = digest.subarray(0, 31);
+    let val = 0n;
+    for (let i = 0; i < slice.length; i++) {
+      val = (val << 8n) | BigInt(slice[i]);
+    }
+    return val;
+  }
+
+  throw new TypeError(`Unsupported input type for toFieldElement: ${typeof input}`);
+}
+
+let poseidonPromise: Promise<any> | null = null;
+
+/**
+ * Returns a cached singleton instance of the circomlibjs Poseidon hasher.
+ */
+export async function getPoseidon(): Promise<any> {
+  if (!poseidonPromise) {
+    poseidonPromise = import('circomlibjs').then((m) => m.buildPoseidon());
+  }
+  return poseidonPromise;
+}
+
+/**
+ * Computes Poseidon hash matching Circom's Poseidon(t) component.
+ *
+ * @param inputs - Array of 1 to 16 inputs convertible to field elements.
+ * @returns Decimal string representation of the hash field element.
+ * @throws {RangeError} If input count is outside [1, 16] or values exceed field order.
+ */
+export async function poseidonHash(inputs: PoseidonInput[]): Promise<string> {
+  if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > 16) {
+    throw new RangeError(
+      `Poseidon requires between 1 and 16 inputs (received ${inputs?.length ?? 0}).`,
+    );
+  }
+  const poseidon = await getPoseidon();
+  const fieldElements = inputs.map(toFieldElement);
+  const hash = poseidon(fieldElements);
+  return poseidon.F.toString(hash);
+}
+
+/**
+ * Computes Poseidon hash returning a BigInt field element.
+ */
+export async function poseidonHashBigInt(inputs: PoseidonInput[]): Promise<bigint> {
+  const str = await poseidonHash(inputs);
+  return BigInt(str);
+}
+
+export interface MedicalRecordCommitmentParams {
+  id: string;
+  patientAddress: string;
+  diagnosis: string;
+  date: string;
+  salt: string | bigint;
+}
+
+/**
+ * Computes a privacy-preserving Poseidon commitment for a medical record.
+ * Commitment = Poseidon(recordId, patientAddress, diagnosis, date, salt)
+ *
+ * @returns The Poseidon commitment as a decimal string.
+ */
+export async function computeRecordCommitment(
+  params: MedicalRecordCommitmentParams,
+): Promise<string> {
+  const idElem = toFieldElement(params.id);
+  const patientElem = toFieldElement(params.patientAddress);
+  const diagElem = toFieldElement(params.diagnosis);
+  const dateElem = toFieldElement(params.date);
+  const saltElem = toFieldElement(params.salt);
+
+  return poseidonHash([idElem, patientElem, diagElem, dateElem, saltElem]);
+}
+
