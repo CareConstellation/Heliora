@@ -109,6 +109,10 @@ Full API reference documenting all endpoints, request/response shapes, and authe
 | Hospital Management | `/hospital` | Role: HOSPITAL |
 | Users | `/users` | Public key |
 
+## Zero-Knowledge Circuits
+
+Circuit parameters, security bounds and trusted setup steps: 📄 [`docs/zk-circuits.md`](./docs/zk-circuits.md)
+
 ## Switching to Mainnet
 
 To point the frontend at the Stellar mainnet, update these variables in `.env.local`:
