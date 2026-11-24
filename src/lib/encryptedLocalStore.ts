@@ -183,3 +183,157 @@ export function createEncryptedLocalStore<T>(options: {
     },
   };
 }
+
+/* ── Circuit Artifact Cache Store (IndexedDB) ────────────────────── */
+
+export const ARTIFACT_DB = 'heliora-zk-artifacts';
+export const ARTIFACT_STORE = 'circuit-artifacts';
+
+export interface StoredCircuitArtifact {
+  key: string;           // Cache key: `${circuitName}:${artifactExt}` or circuit hash
+  version: string;       // Circuit version or deployment hash
+  artifactHash: string;  // SHA-256 hex digest of the binary buffer
+  buffer: ArrayBuffer;   // Binary wasm or zkey data
+  cachedAt: number;      // Epoch ms timestamp
+}
+
+export interface ArtifactStorageProvider {
+  get(
+    key: string,
+    expectedVersion?: string,
+  ): Promise<{ buffer: ArrayBuffer; artifactHash: string; version: string } | null>;
+  set(key: string, buffer: ArrayBuffer, version: string, artifactHash: string): Promise<void>;
+  invalidate(key?: string): Promise<void>;
+  clear(): Promise<void>;
+}
+
+function artifactStoreRequest<T>(
+  mode: IDBTransactionMode,
+  run: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      return reject(new Error('IndexedDB is not supported in this environment.'));
+    }
+    const open = indexedDB.open(ARTIFACT_DB, 1);
+    open.onupgradeneeded = () => {
+      const db = open.result;
+      if (!db.objectStoreNames.contains(ARTIFACT_STORE)) {
+        db.createObjectStore(ARTIFACT_STORE, { keyPath: 'key' });
+      }
+    };
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(ARTIFACT_STORE, mode);
+      const request = run(tx.objectStore(ARTIFACT_STORE));
+      tx.oncomplete = () => {
+        db.close();
+        resolve(request.result);
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(request.error ?? tx.error);
+      };
+    };
+  });
+}
+
+/**
+ * Production IndexedDB provider for caching compiled circuit artifacts (.wasm and .zkey).
+ */
+export const indexedDbArtifactProvider: ArtifactStorageProvider = {
+  async get(key, expectedVersion) {
+    if (typeof indexedDB === 'undefined') return null;
+    try {
+      const record = await artifactStoreRequest<StoredCircuitArtifact | undefined>(
+        'readonly',
+        (s) => s.get(key),
+      );
+      if (!record) return null;
+      // Invalidation on version change
+      if (expectedVersion && record.version !== expectedVersion) {
+        await this.invalidate(key);
+        return null;
+      }
+      return {
+        buffer: record.buffer,
+        artifactHash: record.artifactHash,
+        version: record.version,
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  async set(key, buffer, version, artifactHash) {
+    if (typeof indexedDB === 'undefined') return;
+    try {
+      const record: StoredCircuitArtifact = {
+        key,
+        version,
+        artifactHash,
+        buffer,
+        cachedAt: Date.now(),
+      };
+      await artifactStoreRequest('readwrite', (s) => s.put(record));
+    } catch {
+      // Non-critical if storage fails (e.g. quota exceeded)
+    }
+  },
+
+  async invalidate(key) {
+    if (typeof indexedDB === 'undefined') return;
+    try {
+      if (key) {
+        await artifactStoreRequest('readwrite', (s) => s.delete(key));
+      } else {
+        await this.clear();
+      }
+    } catch {
+      // Ignore deletion errors
+    }
+  },
+
+  async clear() {
+    if (typeof indexedDB === 'undefined') return;
+    try {
+      await artifactStoreRequest('readwrite', (s) => s.clear());
+    } catch {
+      // Ignore clear errors
+    }
+  },
+};
+
+/**
+ * In-memory provider for testing or environments where IndexedDB is unavailable.
+ */
+export function createMemoryArtifactProvider(): ArtifactStorageProvider {
+  const store = new Map<string, StoredCircuitArtifact>();
+  return {
+    async get(key, expectedVersion) {
+      const record = store.get(key);
+      if (!record) return null;
+      if (expectedVersion && record.version !== expectedVersion) {
+        store.delete(key);
+        return null;
+      }
+      return {
+        buffer: record.buffer,
+        artifactHash: record.artifactHash,
+        version: record.version,
+      };
+    },
+    async set(key, buffer, version, artifactHash) {
+      store.set(key, { key, buffer, version, artifactHash, cachedAt: Date.now() });
+    },
+    async invalidate(key) {
+      if (key) store.delete(key);
+      else store.clear();
+    },
+    async clear() {
+      store.clear();
+    },
+  };
+}
+
