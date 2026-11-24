@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { QueueStatusStage, StepAwayContact } from '@/types';
+import { eventManager, EventType, type ContractEvent } from '@/lib/contractEventListener';
 
 export type NotificationEventType =
   | 'access_request'
@@ -37,6 +38,7 @@ export function useNotifications({ address, onNotification }: UseNotificationsOp
 
   const clearUnread = useCallback(() => setUnreadCount(0), []);
 
+  // 1. Subscribe to backend SSE stream
   useEffect(() => {
     if (!address || !process.env.NEXT_PUBLIC_API_URL) return;
 
@@ -75,8 +77,57 @@ export function useNotifications({ address, onNotification }: UseNotificationsOp
     };
   }, [address]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 2. Subscribe to real-time Soroban on-chain contract events (#193)
+  useEffect(() => {
+    if (!address) return;
+
+    const handleContractEvent = (cEvent: ContractEvent) => {
+      let notifType: NotificationEventType;
+
+      switch (cEvent.type) {
+        case EventType.AppointmentBooked:
+          notifType = 'appointment_confirmed';
+          break;
+        case EventType.RecordShared:
+          notifType = 'record_shared';
+          break;
+        case EventType.AccessGranted:
+          notifType = 'access_request';
+          break;
+        default:
+          return;
+      }
+
+      const notif: NotificationEvent = {
+        id: cEvent.id || crypto.randomUUID(),
+        type: notifType,
+        message: EVENT_LABELS[notifType] ?? 'New contract event received',
+        timestamp: cEvent.timestamp || Date.now(),
+      };
+
+      setNotifications((prev) => {
+        // Prevent duplicate notification by event ID
+        if (prev.some((p) => p.id === notif.id)) return prev;
+        return [notif, ...prev];
+      });
+      setUnreadCount((n) => n + 1);
+      onNotification?.(notif);
+    };
+
+    const listenerId = eventManager.registerListener(
+      '',
+      [EventType.AppointmentBooked, EventType.RecordShared, EventType.AccessGranted],
+      handleContractEvent,
+    );
+
+    return () => {
+      eventManager.unregisterListener(listenerId);
+    };
+  }, [address, onNotification]);
+
   return { notifications, unreadCount, clearUnread };
 }
+
 
 /* Dynamic waiting room queue management hook (#49) */
 
