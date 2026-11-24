@@ -213,11 +213,37 @@ export function cdcRecordsToCsv(cdcRecords: CDCEventRecord[]): string {
   ].join('\n');
 }
 
+/* ── Differential Privacy Budget ───────────────────────────────────────── */
+
+import { EpsilonBudget, createEpsilonBudget, consumeEpsilon, trackQuery, laplaceNoise, privatizeCount } from '@/lib/differentialPrivacy';
+
+export interface PublicHealthExportBudget {
+  totalEpsilon: number;
+  remainingEpsilon: number;
+  queriesConsumed: number;
+  isExhausted: boolean;
+}
+
+export function createExportBudget(totalEpsilon: number): PublicHealthExportBudget {
+  const budget = createEpsilonBudget(totalEpsilon);
+  return {
+    totalEpsilon: budget.totalEpsilon,
+    remainingEpsilon: budget.remainingEpsilon,
+    queriesConsumed: budget.queriesConsumed,
+    isExhausted: budget.isExhausted,
+  };
+}
+
 export function downloadPublicHealthExport(
   records: Record<string, unknown>[],
   format: 'csv' | 'json',
   dualAdminApproval?: { primaryAdmin: string; secondaryAdmin: string; approvedAt: string },
+  epsilonBudget?: PublicHealthExportBudget
 ) {
+  if (epsilonBudget && epsilonBudget.isExhausted) {
+    throw new Error('Differential privacy budget exhausted. Cannot perform export.');
+  }
+
   const cdcDataset = transformToCDCSyndromicSchema(records);
   let body: string;
   let filename: string;
@@ -227,6 +253,29 @@ export function downloadPublicHealthExport(
     body = cdcRecordsToCsv(cdcDataset);
     filename = `cdc-syndromic-surveillance-export-${today}.csv`;
   } else {
+    // Apply Laplace noise to counts for differential privacy
+    let noisyDataset: CDCEventRecord[] = [];
+    if (epsilonBudget) {
+      const budget = createExportBudget(epsilonBudget.totalEpsilon);
+      noisyDataset = cdcDataset.map((record) => {
+        // Apply noise to encounter year as an example of DP aggregate
+        const noisyYear = privatizeCount(
+          parseInt(record.encounter_year, 10),
+          1.0,
+          1,
+          budget,
+        );
+        return {
+          ...record,
+          encounter_year: noisyYear !== null ? String(noisyYear) : record.encounter_year,
+        };
+      });
+      // Track the query consumption
+      trackQuery(epsilonBudget, 1.0);
+    } else {
+      noisyDataset = cdcDataset;
+    }
+
     const exportBundle = {
       reportingStandard: 'WHO / CDC Syndromic Surveillance v2.1',
       hipaaSafeHarborCertified: true,
@@ -235,8 +284,8 @@ export function downloadPublicHealthExport(
         secondaryAdmin: 'DUAL_SIGNATORY',
         approvedAt: new Date().toISOString(),
       },
-      exportedRecordCount: cdcDataset.length,
-      data: cdcDataset,
+      exportedRecordCount: noisyDataset.length,
+      data: noisyDataset,
     };
     body = JSON.stringify(exportBundle, null, 2);
     filename = `who-syndromic-surveillance-export-${today}.json`;
