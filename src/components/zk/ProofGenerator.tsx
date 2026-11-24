@@ -3,9 +3,12 @@
 import { useState } from 'react';
 import {
   MIN_CONSULTATION_AGE,
+  checkDeviceMemory,
   generateEligibilityProof,
+  isWasmMemoryError,
   parseCredential,
   verifyEligibilityProof,
+  ZkMemoryError,
   type EligibilityCredential,
   type ZkProofProgress,
 } from '@/lib/zkEligibility';
@@ -38,6 +41,10 @@ export default function ProofGenerator({ commitments, onProof }: Props) {
   const [progress, setProgress] = useState<ZkProofProgress | null>(null);
   const [proof, setProof] = useState<EligibilityProofToken | null>(null);
   const [error, setError] = useState('');
+  const [memoryWarning] = useState<string | null>(() => {
+    const memCheck = checkDeviceMemory();
+    return !memCheck.hasSufficientMemory && memCheck.warning ? memCheck.warning : null;
+  });
 
   async function generate(file: File) {
     setError('');
@@ -56,13 +63,27 @@ export default function ProofGenerator({ commitments, onProof }: Props) {
       setProof(token);
       onProof?.(token);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create the proof.');
+      if (isWasmMemoryError(err) || err instanceof ZkMemoryError) {
+        setError(
+          'Device memory is insufficient for generating zero-knowledge proofs. Please try on a desktop browser or device with at least 4GB of RAM.',
+        );
+      } else {
+        setError(err instanceof Error ? err.message : 'Could not create the proof.');
+      }
       setProgress(null);
     }
   }
 
   return (
     <div>
+      {memoryWarning && (
+        <div
+          role="alert"
+          className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded p-2.5"
+        >
+          <span className="font-semibold">⚠️ Low Device Memory:</span> {memoryWarning}
+        </div>
+      )}
       <p className="block text-xs font-medium text-slate-600 mb-1">Generate an eligibility proof</p>
       <p className="text-xs text-text-3 mb-2">
         Proving runs in a background worker. Your date of birth and policy number never leave this
