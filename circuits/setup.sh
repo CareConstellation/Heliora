@@ -30,3 +30,20 @@ for circuit in age_eligibility insurance_coverage vaccine_verification; do
   "$SNARKJ" zkey export verificationkey "$OUT/$circuit.zkey" "$OUT/$circuit.vkey.json"
   cp "$BUILD/${circuit}_js/$circuit.wasm" "$OUT/$circuit.wasm"
 done
+
+# Pins for the runtime integrity check (src/lib/zkEligibility.ts). Copy the
+# printed JSON into NEXT_PUBLIC_ZK_ARTIFACT_SHA256 before deploying.
+echo
+echo '{'
+first=1
+for circuit in age_eligibility insurance_coverage insurance_deductible; do
+  wasm=$(sha256sum "$OUT/$circuit.wasm" | cut -d' ' -f1)
+  zkey=$(sha256sum "$OUT/$circuit.zkey" | cut -d' ' -f1)
+  vkey=$(sha256sum "$OUT/$circuit.vkey.json" | cut -d' ' -f1)
+  [ "$first" = 1 ] || echo ','
+  first=0
+  printf '  "%s": {"wasm":"%s","zkey":"%s","vkey.json":"%s"}' \
+    "$circuit" "$wasm" "$zkey" "$vkey"
+done
+echo
+echo '}'
