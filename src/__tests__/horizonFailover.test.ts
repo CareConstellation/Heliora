@@ -43,7 +43,7 @@ describe('Issue #196: Automated Horizon Endpoint Failover and Latency-based Rout
   });
 
   it('routes request to primary healthy endpoint and records latency', async () => {
-    const mockOperation = jest.fn().mockImplementation((_server) => {
+    const mockOperation = jest.fn().mockImplementation((server) => {
       return Promise.resolve({ data: 'mock_server_data', serverUrl: server.serverURL.toString() });
     });
 
@@ -62,7 +62,7 @@ describe('Issue #196: Automated Horizon Endpoint Failover and Latency-based Rout
 
   it('dynamically fails over when primary endpoint encounters HTTP 429', async () => {
     let callCount = 0;
-    const mockOperation = jest.fn().mockImplementation((_server) => {
+    const mockOperation = jest.fn().mockImplementation((server) => {
       callCount++;
       if (callCount === 1) {
         const err: any = new Error('Too Many Requests');
