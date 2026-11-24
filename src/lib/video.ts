@@ -410,13 +410,59 @@ export function startTelemetry(
    #66 — Automated reconnection handler with state recovery
    ═══════════════════════════════════════════════════════════════════ */
 
+/* ── #264 — TURN relay failover configuration ──────────────────── */
+
+/** TURN over TLS on port 443 passes through firewalls and proxies that block other ports. */
+export const TURN_TLS_PORT = 443;
+
+export interface TurnServerCredentials {
+  /** TURN hostname only, without scheme or port (e.g. `turn.example.org`). */
+  host: string;
+  username?: string | undefined;
+  credential?: string | undefined;
+}
+
+/**
+ * Builds a relay-only RTCConfiguration that reaches each TURN host over TLS on
+ * port 443 (`turns:<host>:443?transport=tcp`). Returns null when no usable host
+ * is supplied, because a relay-only policy without TURN servers cannot connect.
+ *
+ * Time: O(T) over TURN entries. Space: O(T).
+ */
+export function buildTurnFailoverConfiguration(
+  turnServers: TurnServerCredentials[],
+): RTCConfiguration | null {
+  const iceServers: RTCIceServer[] = [];
+
+  for (const server of turnServers) {
+    const host = server.host.trim();
+    if (!host) continue;
+
+    iceServers.push({
+      urls: `turns:${host}:${TURN_TLS_PORT}?transport=tcp`,
+      ...(server.username ? { username: server.username } : {}),
+      ...(server.credential ? { credential: server.credential } : {}),
+    });
+  }
+
+  if (iceServers.length === 0) return null;
+  return { iceServers, iceTransportPolicy: 'relay' };
+}
+
 export interface ReconnectionManagerConfig {
   peerConnection?: RTCPeerConnection | null | undefined;
   timeoutMs?: number | undefined; // default: 30000 (30 seconds)
+  iceRestartIntervalMs?: number | undefined; // default: 5000 (5 seconds, #270)
   onStatusChange: (status: ReconnectionStatus) => void;
   onReconnected?: (() => void) | undefined;
   onTimeout?: (() => void) | undefined;
   getLocalMediaStream?: (() => MediaStream | null) | undefined;
+  /** TURN servers for the relay-only fallback used after an ICE failure (#264). */
+  turnServers?: TurnServerCredentials[] | undefined;
+  /** Creates the replacement peer connection from the relay-only configuration (#264). */
+  createRelayPeerConnection?: ((config: RTCConfiguration) => RTCPeerConnection) | undefined;
+  /** Receives the replacement peer connection so the caller can renegotiate (#264). */
+  onPeerConnectionReplaced?: ((pc: RTCPeerConnection) => void) | undefined;
 }
 
 export interface ReconnectionManager {
@@ -424,6 +470,7 @@ export interface ReconnectionManager {
   cleanup: () => void;
   triggerIceRestart: () => void;
   restoreMediaTracks: () => void;
+  getPeerConnection: () => RTCPeerConnection | null;
 }
 
 /**
@@ -444,19 +491,26 @@ export function setupAutomatedReconnection(
 ): ReconnectionManager {
   const {
     timeoutMs = 30_000,
+    iceRestartIntervalMs = 5_000,
     onStatusChange,
     onReconnected,
     onTimeout,
     getLocalMediaStream,
+    turnServers,
+    createRelayPeerConnection,
+    onPeerConnectionReplaced,
   } = config;
 
-  const pc = config.peerConnection ?? null;
+  // Mutable: a relay-only failover replaces the peer connection (#264).
+  let pc: RTCPeerConnection | null = config.peerConnection ?? null;
   let currentState: ReconnectionState = 'connected';
   let countdownTimer: ReturnType<typeof setInterval> | null = null;
+  let restartTimer: ReturnType<typeof setInterval> | null = null;
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   let remainingSeconds = Math.ceil(timeoutMs / 1000);
   let attemptCount = 0;
   let isCleanedUp = false;
+  let relayFailoverAttempted = false;
 
   const updateStatus = (
     state: ReconnectionState,
@@ -477,6 +531,10 @@ export function setupAutomatedReconnection(
     if (countdownTimer) {
       clearInterval(countdownTimer);
       countdownTimer = null;
+    }
+    if (restartTimer) {
+      clearInterval(restartTimer);
+      restartTimer = null;
     }
     if (timeoutTimer) {
       clearTimeout(timeoutTimer);
@@ -556,6 +614,13 @@ export function setupAutomatedReconnection(
       }
     }, 1000);
 
+    // Re-run ICE restart every iceRestartIntervalMs until recovery or timeout (#270)
+    restartTimer = setInterval(() => {
+      if (currentState === 'reconnecting') {
+        triggerIceRestart();
+      }
+    }, iceRestartIntervalMs);
+
     // 30-second hard timeout
     timeoutTimer = setTimeout(() => {
       clearTimers();
@@ -594,13 +659,73 @@ export function setupAutomatedReconnection(
     }
   };
 
+  const attachPeerListeners = (target: RTCPeerConnection) => {
+    target.addEventListener('connectionstatechange', handleConnectionStateChange);
+    target.addEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+  };
+
+  const detachPeerListeners = (target: RTCPeerConnection) => {
+    target.removeEventListener('connectionstatechange', handleConnectionStateChange);
+    target.removeEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+  };
+
+  /**
+   * Rebuilds the peer connection with a relay-only (TURN over TLS, port 443)
+   * configuration. Runs at most once per manager. Returns true when the
+   * replacement was installed.
+   */
+  const attemptRelayFailover = (): boolean => {
+    if (relayFailoverAttempted || isCleanedUp) return false;
+    if (!createRelayPeerConnection || !turnServers) return false;
+
+    const relayConfig = buildTurnFailoverConfiguration(turnServers);
+    if (!relayConfig) return false;
+
+    relayFailoverAttempted = true;
+
+    let replacement: RTCPeerConnection;
+    try {
+      replacement = createRelayPeerConnection(relayConfig);
+    } catch (err) {
+      console.warn('Relay-only peer connection could not be created:', err);
+      return false;
+    }
+
+    if (pc) {
+      detachPeerListeners(pc);
+      try {
+        pc.close();
+      } catch {
+        // The failed connection may already be closed.
+      }
+    }
+
+    pc = replacement;
+    attachPeerListeners(pc);
+    onPeerConnectionReplaced?.(pc);
+    return true;
+  };
+
   const handleIceConnectionStateChange = () => {
     if (!pc) return;
     const iceState = pc.iceConnectionState;
 
     if (iceState === 'connected' || iceState === 'completed') {
       handleConnectionRecovery();
-    } else if (iceState === 'disconnected' || iceState === 'failed') {
+    } else if (iceState === 'failed') {
+      // ICE exhausted every candidate pair: fall back to TURN relay once (#264).
+      const failedOver = attemptRelayFailover();
+      if (failedOver && currentState === 'reconnecting') {
+        // startReconnecting is a no-op while already reconnecting, so restart the replacement here.
+        triggerIceRestart();
+      } else {
+        startReconnecting(
+          failedOver
+            ? 'ICE failed. Re-establishing the call over TURN relay...'
+            : 'ICE transport failed. Initiating ICE restart...',
+        );
+      }
+    } else if (iceState === 'disconnected') {
       startReconnecting(`ICE transport ${iceState}. Initiating ICE restart...`);
     }
   };
@@ -611,8 +736,7 @@ export function setupAutomatedReconnection(
   }
 
   if (pc) {
-    pc.addEventListener('connectionstatechange', handleConnectionStateChange);
-    pc.addEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+    attachPeerListeners(pc);
   }
 
   const retry = () => {
@@ -630,8 +754,7 @@ export function setupAutomatedReconnection(
     }
 
     if (pc) {
-      pc.removeEventListener('connectionstatechange', handleConnectionStateChange);
-      pc.removeEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+      detachPeerListeners(pc);
     }
   };
 
@@ -640,6 +763,7 @@ export function setupAutomatedReconnection(
     cleanup,
     triggerIceRestart,
     restoreMediaTracks,
+    getPeerConnection: () => pc,
   };
 }
 

@@ -1,30 +1,44 @@
 'use client';
 
 import React from 'react';
-import { WifiOff, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { RefreshCw, AlertCircle, Mic } from 'lucide-react';
 import type { ReconnectionStatus } from '@/types';
 
 interface Props {
   status: ReconnectionStatus;
   onRetry: () => void;
+  onSwitchToAudioOnly?: () => void;
   onDismiss?: () => void;
 }
 
+/** Length of the reconnection window shown in the countdown (#66, #270). */
+export const RECONNECT_WINDOW_SECONDS = 30;
+
 /**
  * Unobtrusive reconnection overlay for WebRTC telemedicine sessions.
- * Displays during network switches (e.g. Wi-Fi to 5G) with a 30-second timeout counter.
+ * Shows a 30-second countdown while ICE restarts run. On timeout it offers
+ * "Retry" and "Switch to Audio-Only" (#270).
  *
  * Algorithmic Complexity:
  * - Time: O(1) single-pass conditional render.
  * - Space: O(1) constant memory.
  */
-export default function ReconnectionOverlay({ status, onRetry, onDismiss }: Props) {
+export default function ReconnectionOverlay({
+  status,
+  onRetry,
+  onSwitchToAudioOnly,
+  onDismiss,
+}: Props) {
   if (status.state === 'connected') {
     return null;
   }
 
   const isReconnecting = status.state === 'reconnecting';
   const isFailed = status.state === 'failed';
+  const progressPercent = Math.max(
+    0,
+    Math.min(100, (status.remainingSeconds / RECONNECT_WINDOW_SECONDS) * 100),
+  );
 
   return (
     <div
@@ -51,9 +65,7 @@ export default function ReconnectionOverlay({ status, onRetry, onDismiss }: Prop
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-white tracking-tight">
-                {isReconnecting
-                  ? 'Reconnecting to consultation...'
-                  : 'Connection Interrupted'}
+                {isReconnecting ? 'Reconnecting to consultation...' : 'Connection Interrupted'}
               </h3>
               {isReconnecting && (
                 <span className="font-mono text-2xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
@@ -72,25 +84,25 @@ export default function ReconnectionOverlay({ status, onRetry, onDismiss }: Prop
           </div>
         </div>
 
-        {/* 30-Second Progress Bar */}
+        {/* Countdown progress for the reconnection window */}
         {isReconnecting && (
           <div className="space-y-1.5">
             <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
               <div
                 className="h-full bg-amber-400 transition-all duration-1000 ease-linear rounded-full"
-                style={{ width: `${Math.max(0, Math.min(100, (status.remainingSeconds / 30) * 100))}%` }}
+                style={{ width: `${progressPercent}%` }}
               />
             </div>
             <div className="flex justify-between items-center text-3xs text-slate-400 font-mono">
-              <span>Automatic ICE restart active</span>
+              <span>ICE restart every 5s</span>
               <span>Timeout in {status.remainingSeconds}s</span>
             </div>
           </div>
         )}
 
-        {/* Actions for Failed Reconnection */}
+        {/* Actions once the reconnection window has expired */}
         {isFailed && (
-          <div className="pt-2 border-t border-white/10 flex items-center justify-end gap-2">
+          <div className="pt-2 border-t border-white/10 flex flex-wrap items-center justify-end gap-2">
             {onDismiss && (
               <button
                 type="button"
@@ -100,13 +112,23 @@ export default function ReconnectionOverlay({ status, onRetry, onDismiss }: Prop
                 Dismiss
               </button>
             )}
+            {onSwitchToAudioOnly && (
+              <button
+                type="button"
+                onClick={onSwitchToAudioOnly}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white border border-white/20 hover:bg-white/10 rounded-md transition-colors"
+              >
+                <Mic className="w-3.5 h-3.5" />
+                Switch to Audio-Only
+              </button>
+            )}
             <button
               type="button"
               onClick={onRetry}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#030D09] bg-green hover:bg-green-400 rounded-md transition-colors"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              Retry Reconnection
+              Retry
             </button>
           </div>
         )}

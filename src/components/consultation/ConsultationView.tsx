@@ -64,6 +64,7 @@ export default function ConsultationView({
     attemptCount: 0,
   });
   const reconnectionManagerRef = useRef<ReconnectionManager | null>(null);
+  const [isAudioOnly, setIsAudioOnly] = useState(false);
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
@@ -476,10 +477,33 @@ export default function ConsultationView({
                 isTranscribing={isTranscribing}
               />
 
-              {/* Automated Reconnection Overlay with 30s Timeout (#66) */}
+              {/* Audio-only mode keeps the call's audio running behind this card (#270) */}
+              {isAudioOnly && !screenStream && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-surface-card p-6 text-center">
+                  <Mic className="w-6 h-6 text-green" />
+                  <p className="text-sm font-semibold text-text-1">Audio-only mode</p>
+                  <p className="text-xs text-text-3 max-w-xs">
+                    The call continues with sound. Turn off your camera in the call controls to stop
+                    sending video.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsAudioOnly(false)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+                  >
+                    Show video
+                  </button>
+                </div>
+              )}
+
+              {/* Automated Reconnection Overlay with 30s countdown (#66, #270) */}
               <ReconnectionOverlay
                 status={reconnectionStatus}
                 onRetry={() => reconnectionManagerRef.current?.retry()}
+                onSwitchToAudioOnly={() => {
+                  setIsAudioOnly(true);
+                  setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
+                }}
                 onDismiss={() => {
                   setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
                 }}
