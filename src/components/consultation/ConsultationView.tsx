@@ -59,6 +59,12 @@ export default function ConsultationView({
   const containerRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const isDragging = useRef(false);
+  const callStartedAtRef = useRef<number | null>(null);
+
+  // Start the visit clock once the consultation is on screen (#271).
+  useEffect(() => {
+    callStartedAtRef.current = Date.now();
+  }, []);
 
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isVideoMinimized, setIsVideoMinimized] = useState(false);
@@ -82,6 +88,9 @@ export default function ConsultationView({
     attemptCount: 0,
   });
   const reconnectionManagerRef = useRef<ReconnectionManager | null>(null);
+  const [isAudioOnly, setIsAudioOnly] = useState(false);
+  const [isPiPAvailable, setIsPiPAvailable] = useState(false);
+  const [isNativePiPActive, setIsNativePiPActive] = useState(false);
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
@@ -294,7 +303,12 @@ export default function ConsultationView({
     );
     setDraftNote(note);
     setActiveTab('notes');
-  }, [appointmentId, patientAddress, transcripts, doctorName]);
+
+    onCallEnded?.({
+      durationMs: callStartedAtRef.current === null ? 0 : Date.now() - callStartedAtRef.current,
+      draft: note,
+    });
+  }, [appointmentId, patientAddress, transcripts, doctorName, onCallEnded]);
 
   /* ── Existing Screen Share & Divider Logic ───────────────────────── */
   const handleScreenVideoElement = useCallback((_tileId: string, element: HTMLVideoElement | null) => {
@@ -341,6 +355,39 @@ export default function ConsultationView({
     observer.observe(el);
     return () => observer.disconnect();
   }, [splitRatio]);
+
+  /* ── Native Picture-in-Picture for the shared screen (#265) ───────── */
+  useEffect(() => {
+    setIsPiPAvailable(isPictureInPictureAvailable(document));
+  }, []);
+
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video || !screenStream) return;
+
+    const onEnter = () => setIsNativePiPActive(true);
+    const onLeave = () => setIsNativePiPActive(false);
+    video.addEventListener('enterpictureinpicture', onEnter);
+    video.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', onEnter);
+      video.removeEventListener('leavepictureinpicture', onLeave);
+      // The element may be gone, so the browser may not fire leavepictureinpicture.
+      setIsNativePiPActive(false);
+    };
+  }, [screenStream, isVideoMinimized]);
+
+  async function handleTogglePiP() {
+    const video = screenVideoRef.current;
+    if (!video) return;
+
+    try {
+      setIsNativePiPActive(await toggleVideoPictureInPicture(video, document));
+    } catch (err) {
+      console.warn('Picture-in-Picture request failed:', err);
+      setIsNativePiPActive(false);
+    }
+  }
 
   function handleScreenStart(stream: MediaStream) {
     setScreenStream(stream);
@@ -545,10 +592,33 @@ export default function ConsultationView({
                 isTranscribing={isTranscribing}
               />
 
-              {/* Automated Reconnection Overlay with 30s Timeout (#66) */}
+              {/* Audio-only mode keeps the call's audio running behind this card (#270) */}
+              {isAudioOnly && !screenStream && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-surface-card p-6 text-center">
+                  <Mic className="w-6 h-6 text-green" />
+                  <p className="text-sm font-semibold text-text-1">Audio-only mode</p>
+                  <p className="text-xs text-text-3 max-w-xs">
+                    The call continues with sound. Turn off your camera in the call controls to stop
+                    sending video.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsAudioOnly(false)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+                  >
+                    Show video
+                  </button>
+                </div>
+              )}
+
+              {/* Automated Reconnection Overlay with 30s countdown (#66, #270) */}
               <ReconnectionOverlay
                 status={reconnectionStatus}
                 onRetry={() => reconnectionManagerRef.current?.retry()}
+                onSwitchToAudioOnly={() => {
+                  setIsAudioOnly(true);
+                  setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
+                }}
                 onDismiss={() => {
                   setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
                 }}

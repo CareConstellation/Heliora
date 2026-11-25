@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import PreCallDiagnostic from '@/components/consultation/PreCallDiagnostic';
 
@@ -22,12 +22,37 @@ const ConsultationView = dynamic(
 );
 
 function ConsultationContent() {
+  const router = useRouter();
   const params = useSearchParams();
+  const [visitSummary, setVisitSummary] = useState<VisitSummary | null>(null);
   const appointmentId = params.get('id') ?? '';
   const patientAddress = params.get('patient') ?? '';
   const videoRoomUrl = params.get('videoUrl') ?? '';
   const doctorName = params.get('doctor') ?? '';
   const [precallDone, setPrecallDone] = useState(false);
+
+  // Hooks stay above the early return so the call-end flow is always registered (#271).
+  const handleCallEnded = useCallback(
+    ({ durationMs, draft }: ConsultationEndPayload) => {
+      setVisitSummary(
+        buildVisitSummary({
+          appointmentId,
+          doctorName,
+          durationMs,
+          diagnosis: draft.diagnosis,
+          prescriptionText: draft.prescription,
+        }),
+      );
+    },
+    [appointmentId, doctorName],
+  );
+
+  const handleCloseSummary = useCallback(() => setVisitSummary(null), []);
+
+  const handleScheduleFollowUp = useCallback(() => {
+    setVisitSummary(null);
+    router.push('/appointments');
+  }, [router]);
 
   if (!appointmentId || !patientAddress || !videoRoomUrl) {
     return (
@@ -46,12 +71,22 @@ function ConsultationContent() {
   }
 
   return (
-    <ConsultationView
-      appointmentId={appointmentId}
-      patientAddress={patientAddress}
-      videoRoomUrl={videoRoomUrl}
-      doctorName={doctorName}
-    />
+    <>
+      <ConsultationView
+        appointmentId={appointmentId}
+        patientAddress={patientAddress}
+        videoRoomUrl={videoRoomUrl}
+        doctorName={doctorName}
+        onCallEnded={handleCallEnded}
+      />
+      {visitSummary && (
+        <PostConsultationSummaryModal
+          summary={visitSummary}
+          onClose={handleCloseSummary}
+          onScheduleFollowUp={handleScheduleFollowUp}
+        />
+      )}
+    </>
   );
 }
 
