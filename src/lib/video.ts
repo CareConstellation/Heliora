@@ -1587,3 +1587,442 @@ export function createNoiseCancellationPipeline(
     close,
   };
 }
+
+/* ─── Acoustic Feedback Detection & Auto-Ducking (#269) ─────────────── */
+
+/**
+ * When two participants join from the same room (e.g. a clinician and a
+ * nurse on separate laptops), one device's microphone picks up the other's
+ * speaker. The loop gain at the room's resonant frequency exceeds 1 and the
+ * signal "howls": a single narrow spectral peak, far louder than the bins
+ * around it, that persists and keeps the same frequency. Speech never looks
+ * like that — its energy is spread over harmonics that move every few tens
+ * of milliseconds — so a peak that is both narrow and stable is a reliable
+ * howling signature.
+ */
+export interface FeedbackDetectionConfig {
+  /** Only bins between these frequencies are considered (howling is almost always in the 200 Hz–5 kHz band). */
+  minFrequencyHz: number;
+  maxFrequencyHz: number;
+  /** Peak must be at least this loud (dBFS) to count; avoids flagging quiet hum. */
+  minPeakDb: number;
+  /** Peak must stand this many dB above the median of its neighbourhood. */
+  minProminenceDb: number;
+  /**
+   * Peak must also stand this many dB above everything else in the band.
+   * Speech spreads energy over several harmonics of similar level; a howl
+   * dominates the whole spectrum (peak-to-harmonic ratio).
+   */
+  minDominanceDb: number;
+  /** Half-width, in bins, of the neighbourhood used for the prominence check. */
+  neighbourhoodBins: number;
+  /** Bins within this distance are treated as the "same" frequency between frames. */
+  frequencyToleranceBins: number;
+  /** A peak must persist at a stable frequency for this long before ducking. */
+  sustainMs: number;
+  /** After the last spike, stay ducked this long before restoring volume. */
+  releaseMs: number;
+}
+
+export const DEFAULT_FEEDBACK_DETECTION: FeedbackDetectionConfig = {
+  minFrequencyHz: 200,
+  maxFrequencyHz: 5000,
+  minPeakDb: -45,
+  minProminenceDb: 25,
+  minDominanceDb: 10,
+  neighbourhoodBins: 12,
+  frequencyToleranceBins: 2,
+  sustainMs: 300,
+  releaseMs: 4000,
+};
+
+/** Attenuation applied to playback while feedback is detected. */
+export const FEEDBACK_DUCK_DB = 20;
+
+/** Converts a dB change to a linear gain multiplier (-20 dB → 0.1). */
+export function dbToGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
+/** Linear playback gain while ducked: 20 dB below unity, i.e. 0.1. */
+export const FEEDBACK_DUCK_GAIN = dbToGain(-FEEDBACK_DUCK_DB);
+
+export interface FeedbackSpike {
+  bin: number;
+  frequencyHz: number;
+  peakDb: number;
+  prominenceDb: number;
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return -Infinity;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+}
+
+/**
+ * Finds the most prominent narrowband peak in one frame of an
+ * `AnalyserNode.getFloatFrequencyData` spectrum (dB per bin). Returns null
+ * when no bin qualifies as a howling candidate.
+ *
+ * Time: O(B · W log W) for B bins in range and neighbourhood width W.
+ * Space: O(W).
+ */
+export function detectFeedbackSpike(
+  spectrumDb: Float32Array,
+  sampleRate: number,
+  config: FeedbackDetectionConfig = DEFAULT_FEEDBACK_DETECTION,
+): FeedbackSpike | null {
+  const binCount = spectrumDb.length;
+  if (binCount === 0 || sampleRate <= 0) return null;
+  const binHz = sampleRate / 2 / binCount;
+  const first = Math.max(1, Math.ceil(config.minFrequencyHz / binHz));
+  const last = Math.min(binCount - 2, Math.floor(config.maxFrequencyHz / binHz));
+
+  let best: FeedbackSpike | null = null;
+  for (let i = first; i <= last; i++) {
+    const peak = spectrumDb[i]!;
+    if (!Number.isFinite(peak) || peak < config.minPeakDb) continue;
+    // Local maximum only.
+    if (peak < spectrumDb[i - 1]! || peak < spectrumDb[i + 1]!) continue;
+
+    // Skip the peak itself and its immediate skirt (window leakage) so a
+    // pure tone's own sidelobes do not raise the reference level.
+    const neighbours: number[] = [];
+    const lo = Math.max(0, i - config.neighbourhoodBins);
+    const hi = Math.min(binCount - 1, i + config.neighbourhoodBins);
+    for (let j = lo; j <= hi; j++) {
+      if (Math.abs(j - i) <= 2) continue;
+      const v = spectrumDb[j]!;
+      neighbours.push(Number.isFinite(v) ? v : -140);
+    }
+    const prominence = peak - median(neighbours);
+    if (prominence < config.minProminenceDb) continue;
+    if (!best || prominence > best.prominenceDb) {
+      best = { bin: i, frequencyHz: i * binHz, peakDb: peak, prominenceDb: prominence };
+    }
+  }
+  if (!best) return null;
+
+  // Dominance: compare with the loudest bin outside the peak's neighbourhood.
+  let rest = -Infinity;
+  for (let j = first; j <= last; j++) {
+    if (Math.abs(j - best.bin) <= config.neighbourhoodBins) continue;
+    const v = spectrumDb[j]!;
+    if (Number.isFinite(v) && v > rest) rest = v;
+  }
+  if (Number.isFinite(rest) && best.peakDb - rest < config.minDominanceDb) return null;
+  return best;
+}
+
+export interface FeedbackState {
+  /** Playback is currently ducked. */
+  ducked: boolean;
+  /** Candidate peak being tracked, and when it first appeared. */
+  candidateBin: number | null;
+  candidateSince: number;
+  /** Last time a qualifying spike was seen. */
+  lastSpikeAt: number;
+  /** Frequency that triggered the current duck, for the on-screen notice. */
+  frequencyHz: number | null;
+}
+
+export const INITIAL_FEEDBACK_STATE: FeedbackState = {
+  ducked: false,
+  candidateBin: null,
+  candidateSince: 0,
+  lastSpikeAt: 0,
+  frequencyHz: null,
+};
+
+/**
+ * Pure state machine: ducks once a spike holds a stable frequency for
+ * `sustainMs`, and releases `releaseMs` after the last spike. Transient
+ * peaks (a whistle, a dropped instrument) never last long enough to trigger.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function evaluateFeedbackState(
+  state: FeedbackState,
+  spike: FeedbackSpike | null,
+  nowMs: number,
+  config: FeedbackDetectionConfig = DEFAULT_FEEDBACK_DETECTION,
+): FeedbackState {
+  if (!spike) {
+    if (state.ducked && nowMs - state.lastSpikeAt >= config.releaseMs) {
+      return { ...INITIAL_FEEDBACK_STATE, lastSpikeAt: state.lastSpikeAt };
+    }
+    if (state.ducked) return state;
+    return { ...state, candidateBin: null, candidateSince: 0 };
+  }
+
+  const sameFrequency =
+    state.candidateBin !== null &&
+    Math.abs(spike.bin - state.candidateBin) <= config.frequencyToleranceBins;
+  const candidateSince = sameFrequency ? state.candidateSince : nowMs;
+  const sustained = nowMs - candidateSince >= config.sustainMs;
+
+  if (state.ducked) {
+    return { ...state, candidateBin: spike.bin, candidateSince, lastSpikeAt: nowMs };
+  }
+  return {
+    ducked: sustained,
+    candidateBin: spike.bin,
+    candidateSince,
+    lastSpikeAt: nowMs,
+    frequencyHz: sustained ? spike.frequencyHz : null,
+  };
+}
+
+export interface FeedbackDetectorStatus {
+  ducked: boolean;
+  frequencyHz: number | null;
+  /** Gain playback should use: 1, or {@link FEEDBACK_DUCK_GAIN} while ducked. */
+  gain: number;
+}
+
+export interface FeedbackDetectorOptions {
+  config?: Partial<FeedbackDetectionConfig>;
+  /** Detection tick; 50 ms gives ~6 frames inside the 300 ms sustain window. */
+  intervalMs?: number;
+  audioContext?: AudioContext;
+  onChange?: (status: FeedbackDetectorStatus) => void;
+  now?: () => number;
+}
+
+export interface FeedbackDetector {
+  getStatus: () => FeedbackDetectorStatus;
+  /** Clears a duck immediately (e.g. after the user turns a device down). */
+  reset: () => void;
+  stop: () => Promise<void>;
+}
+
+/**
+ * Taps the local microphone with an `AnalyserNode` (it is never connected to
+ * the output, so nothing is added to the call) and reports when howling is
+ * detected. The caller applies {@link FeedbackDetectorStatus.gain} to remote
+ * playback: cutting the speaker by 20 dB drops the loop gain below 1 and the
+ * howl collapses within a few hundred milliseconds.
+ */
+export function createFeedbackDetector(
+  input: MediaStream,
+  options: FeedbackDetectorOptions = {},
+): FeedbackDetector {
+  const Ctor = getAudioContextCtor();
+  const context = options.audioContext ?? (Ctor ? new Ctor() : null);
+  if (!context) throw new Error('Web Audio API is not available in this browser.');
+
+  const config: FeedbackDetectionConfig = { ...DEFAULT_FEEDBACK_DETECTION, ...options.config };
+  const now = options.now ?? Date.now;
+
+  const source = context.createMediaStreamSource(input);
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 2048;
+  // Light smoothing steadies the peak across frames without hiding onset.
+  analyser.smoothingTimeConstant = 0.5;
+  source.connect(analyser);
+
+  const spectrum = new Float32Array(analyser.frequencyBinCount);
+  let state: FeedbackState = INITIAL_FEEDBACK_STATE;
+  let stopped = false;
+
+  const toStatus = (s: FeedbackState): FeedbackDetectorStatus => ({
+    ducked: s.ducked,
+    frequencyHz: s.frequencyHz,
+    gain: s.ducked ? FEEDBACK_DUCK_GAIN : 1,
+  });
+
+  const tick = () => {
+    if (stopped) return;
+    analyser.getFloatFrequencyData(spectrum);
+    const spike = detectFeedbackSpike(spectrum, context.sampleRate, config);
+    const next = evaluateFeedbackState(state, spike, now(), config);
+    const changed = next.ducked !== state.ducked;
+    state = next;
+    if (changed) options.onChange?.(toStatus(state));
+  };
+  const timer = setInterval(tick, options.intervalMs ?? 50);
+
+  return {
+    getStatus: () => toStatus(state),
+    reset: () => {
+      const wasDucked = state.ducked;
+      state = INITIAL_FEEDBACK_STATE;
+      if (wasDucked) options.onChange?.(toStatus(state));
+    },
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      source.disconnect();
+      analyser.disconnect();
+      if (!options.audioContext && context.state !== 'closed') await context.close();
+    },
+  };
+}
+
+/* ─── Audio Output (Speaker) Selection (#267) ───────────────────────── */
+
+export const AUDIO_OUTPUT_STORAGE_KEY = 'heliora:audio-output-device';
+/** `setSinkId('')` routes to the user agent's default output. */
+export const DEFAULT_AUDIO_OUTPUT_ID = 'default';
+
+export interface AudioOutputDevice {
+  deviceId: string;
+  label: string;
+}
+
+type SinkableElement = HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
+
+/** Chrome/Edge/Firefox 116+ support `setSinkId`; Safari does not. */
+export function isAudioOutputSelectionSupported(): boolean {
+  return (
+    typeof HTMLMediaElement !== 'undefined' &&
+    typeof (HTMLMediaElement.prototype as SinkableElement).setSinkId === 'function'
+  );
+}
+
+/**
+ * Lists speakers/headsets. Labels are blank until the page has been granted
+ * microphone access, so unnamed devices get a numbered fallback label.
+ */
+export async function listAudioOutputDevices(
+  mediaDevices: Pick<MediaDevices, 'enumerateDevices'> | undefined = typeof navigator !== 'undefined'
+    ? navigator.mediaDevices
+    : undefined,
+): Promise<AudioOutputDevice[]> {
+  if (!mediaDevices?.enumerateDevices) return [];
+  const devices = await mediaDevices.enumerateDevices();
+  const outputs = devices.filter((d) => d.kind === 'audiooutput');
+  const seen = new Set<string>();
+  const result: AudioOutputDevice[] = [];
+  outputs.forEach((d, index) => {
+    if (seen.has(d.deviceId)) return;
+    seen.add(d.deviceId);
+    result.push({
+      deviceId: d.deviceId,
+      label:
+        d.label ||
+        (d.deviceId === DEFAULT_AUDIO_OUTPUT_ID ? 'System default' : `Speaker ${index + 1}`),
+    });
+  });
+  return result;
+}
+
+/**
+ * Routes every element to `deviceId`. Elements that fail (device unplugged,
+ * permission denied) are reported rather than thrown, so one bad element does
+ * not leave the others on the old device.
+ */
+export async function applyAudioOutputDevice(
+  elements: Iterable<HTMLMediaElement | null | undefined>,
+  deviceId: string,
+): Promise<{ applied: number; failed: number; error?: Error }> {
+  const sinkId = deviceId === DEFAULT_AUDIO_OUTPUT_ID ? '' : deviceId;
+  let applied = 0;
+  let failed = 0;
+  let error: Error | undefined;
+  for (const el of elements) {
+    const sinkable = el as SinkableElement | null | undefined;
+    if (!sinkable || typeof sinkable.setSinkId !== 'function') continue;
+    try {
+      await sinkable.setSinkId(sinkId);
+      applied++;
+    } catch (err) {
+      failed++;
+      error = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+  return error ? { applied, failed, error } : { applied, failed };
+}
+
+export function loadPreferredAudioOutput(storage?: Storage): string {
+  try {
+    const s = storage ?? (typeof window !== 'undefined' ? window.localStorage : undefined);
+    return s?.getItem(AUDIO_OUTPUT_STORAGE_KEY) || DEFAULT_AUDIO_OUTPUT_ID;
+  } catch {
+    return DEFAULT_AUDIO_OUTPUT_ID;
+  }
+}
+
+export function savePreferredAudioOutput(deviceId: string, storage?: Storage): void {
+  try {
+    const s = storage ?? (typeof window !== 'undefined' ? window.localStorage : undefined);
+    s?.setItem(AUDIO_OUTPUT_STORAGE_KEY, deviceId);
+  } catch {
+    // Private mode / quota: the choice still applies for this session.
+  }
+}
+
+/**
+ * Builds a short two-note chime as a 16-bit mono PCM WAV. Generated in code
+ * so there is no asset to fetch and the sample works offline.
+ *
+ * Time/Space: O(sampleRate · durationSeconds).
+ */
+export function createTestToneWav(
+  options: { sampleRate?: number; durationSeconds?: number; frequenciesHz?: number[] } = {},
+): Uint8Array {
+  const sampleRate = options.sampleRate ?? 22050;
+  const duration = options.durationSeconds ?? 0.9;
+  const notes = options.frequenciesHz ?? [660, 880];
+  const sampleCount = Math.round(sampleRate * duration);
+  const dataBytes = sampleCount * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  const writeAscii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true); // PCM chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeAscii(36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  const perNote = Math.ceil(sampleCount / notes.length);
+  for (let i = 0; i < sampleCount; i++) {
+    const noteIndex = Math.min(notes.length - 1, Math.floor(i / perNote));
+    const t = (i - noteIndex * perNote) / sampleRate;
+    const noteLen = perNote / sampleRate;
+    // 10 ms attack, exponential decay: no clicks at note boundaries.
+    const envelope = Math.min(1, t / 0.01) * Math.exp((-4 * t) / noteLen);
+    const sample = 0.35 * envelope * Math.sin(2 * Math.PI * notes[noteIndex]! * t);
+    view.setInt16(44 + i * 2, Math.round(sample * 0x7fff), true);
+  }
+  return new Uint8Array(buffer);
+}
+
+/**
+ * Plays the test chime on `deviceId`. Resolves once playback has started;
+ * rejects when the browser blocks playback or the device is unavailable.
+ */
+export async function playTestSpeakerSample(
+  deviceId: string,
+  options: { createAudio?: () => HTMLAudioElement } = {},
+): Promise<HTMLAudioElement> {
+  const audio = options.createAudio?.() ?? new Audio();
+  const wav = createTestToneWav();
+  const url = URL.createObjectURL(new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }));
+  const cleanup = () => URL.revokeObjectURL(url);
+  audio.addEventListener('ended', cleanup, { once: true });
+  audio.src = url;
+  try {
+    const { error } = await applyAudioOutputDevice([audio], deviceId);
+    if (error) throw error;
+    await audio.play();
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  return audio;
+}

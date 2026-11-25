@@ -1,4 +1,6 @@
 import type { Keypair } from '@stellar/stellar-sdk';
+import { createEncryptedLocalStore, type EncryptedLocalStore } from '@/lib/encryptedLocalStore';
+import { verifySignedMessage, type MessageSigner } from '@/lib/stellar';
 
 interface BreakGlassKey {
   keyId: string;
@@ -394,3 +396,280 @@ class BreakGlassMultiSigProtocol {
 
 export { BreakGlassMultiSigProtocol };
 export type { BreakGlassKey, BreakGlassRequest, BreakGlassApproval, BreakGlassAuditLog };
+
+/* ─── In-call Emergency (911) Dispatch (#268) ───────────────────────── */
+
+/**
+ * Two-click confirmation gate for the emergency button.
+ *
+ * The first click only *arms* the gate. Dispatch happens on a second,
+ * deliberate click that lands after {@link EMERGENCY_CONFIRM_MIN_DELAY_MS}
+ * (so a double-click or a bounce cannot dispatch) and before
+ * {@link EMERGENCY_CONFIRM_WINDOW_MS} (so a stale armed button left on screen
+ * cannot be confirmed minutes later by an unrelated tap).
+ */
+export const EMERGENCY_CONFIRM_MIN_DELAY_MS = 600;
+export const EMERGENCY_CONFIRM_WINDOW_MS = 10_000;
+
+export type EmergencyGateState =
+  | { status: 'idle' }
+  | { status: 'armed'; armedAt: number }
+  | { status: 'confirmed'; armedAt: number; confirmedAt: number };
+
+export type EmergencyGateResult =
+  | { action: 'armed'; state: EmergencyGateState }
+  | { action: 'confirmed'; state: EmergencyGateState }
+  | { action: 'ignored'; reason: 'too-fast' | 'already-confirmed'; state: EmergencyGateState }
+  | { action: 're-armed'; reason: 'expired'; state: EmergencyGateState };
+
+export const INITIAL_EMERGENCY_GATE: EmergencyGateState = { status: 'idle' };
+
+/**
+ * Advances the gate for one click. Pure, so every safety rule is unit tested.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function pressEmergencyGate(state: EmergencyGateState, nowMs: number): EmergencyGateResult {
+  switch (state.status) {
+    case 'idle':
+      return { action: 'armed', state: { status: 'armed', armedAt: nowMs } };
+    case 'armed': {
+      const elapsed = nowMs - state.armedAt;
+      if (elapsed < EMERGENCY_CONFIRM_MIN_DELAY_MS) {
+        return { action: 'ignored', reason: 'too-fast', state };
+      }
+      if (elapsed > EMERGENCY_CONFIRM_WINDOW_MS) {
+        return { action: 're-armed', reason: 'expired', state: { status: 'armed', armedAt: nowMs } };
+      }
+      return {
+        action: 'confirmed',
+        state: { status: 'confirmed', armedAt: state.armedAt, confirmedAt: nowMs },
+      };
+    }
+    case 'confirmed':
+      return { action: 'ignored', reason: 'already-confirmed', state };
+  }
+}
+
+/** Remaining confirmation time, or 0 when the gate is not armed / has expired. */
+export function emergencyGateRemainingMs(state: EmergencyGateState, nowMs: number): number {
+  if (state.status !== 'armed') return 0;
+  return Math.max(0, EMERGENCY_CONFIRM_WINDOW_MS - (nowMs - state.armedAt));
+}
+
+/** Patient-provided address dispatchers should send responders to. */
+export interface EmergencyAddress {
+  line1: string;
+  line2?: string;
+  city: string;
+  region?: string;
+  postalCode?: string;
+  country: string;
+  /** Access notes: gate code, floor, "door at the back". */
+  accessNotes?: string;
+}
+
+export interface EmergencyProfile {
+  address: EmergencyAddress;
+  phone?: string;
+  emergencyContact?: { name: string; phone: string };
+  updatedAt: string;
+}
+
+export const EMERGENCY_PROFILE_NAMESPACE = 'heliora-emergency-profile';
+
+/**
+ * Emergency profiles are sealed with AES-256-GCM via the encrypted local
+ * store, bound to the patient's address, so they are unreadable at rest and
+ * cannot be swapped between patients.
+ */
+export function createEmergencyProfileStore(
+  options: Omit<Parameters<typeof createEncryptedLocalStore<EmergencyProfile>>[0], 'namespace'> = {},
+): EncryptedLocalStore<EmergencyProfile> {
+  return createEncryptedLocalStore<EmergencyProfile>({ ...options, namespace: EMERGENCY_PROFILE_NAMESPACE });
+}
+
+/** Single-line, dispatcher-readable address. */
+export function formatEmergencyAddress(address: EmergencyAddress): string {
+  return [
+    address.line1,
+    address.line2,
+    address.city,
+    [address.region, address.postalCode].filter(Boolean).join(' '),
+    address.country,
+  ]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+/**
+ * Decrypts the patient's emergency profile. Returns null when none is on
+ * file; tampered/undecryptable data is reported as an error so the UI can ask
+ * the clinician to confirm the address verbally instead of guessing.
+ */
+export async function loadPatientEmergencyProfile(
+  patientAddress: string,
+  store: EncryptedLocalStore<EmergencyProfile> = createEmergencyProfileStore(),
+): Promise<{ profile: EmergencyProfile | null; error?: string }> {
+  try {
+    return { profile: await store.load(patientAddress) };
+  } catch (err) {
+    return { profile: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export interface EmergencyDispatchPayload {
+  /** Schema/domain tag; part of the signed bytes so a signature cannot be replayed elsewhere. */
+  type: 'heliora.emergency_dispatch.v1';
+  dispatchId: string;
+  appointmentId: string;
+  patientAddress: string;
+  initiatedBy: string;
+  initiatorRole: 'DOCTOR' | 'PATIENT';
+  reason: string;
+  /** null when no verified address was available; dispatcher must call back. */
+  location: { formatted: string; address: EmergencyAddress; source: 'encrypted-profile' | 'confirmed-verbally' } | null;
+  callbackPhone?: string;
+  confirmation: { armedAt: number; confirmedAt: number };
+  issuedAt: string;
+}
+
+export interface SignedEmergencyDispatch {
+  payload: EmergencyDispatchPayload;
+  /** Exact bytes that were signed (canonical JSON of the payload). */
+  message: string;
+  /** Base64 SEP-53 signature by `payload.initiatedBy`. */
+  signature: string;
+}
+
+/** Deterministic JSON: object keys sorted recursively, so signer and verifier hash the same bytes. */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+function randomDispatchId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `emg_${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export interface BuildEmergencyDispatchInput {
+  appointmentId: string;
+  patientAddress: string;
+  initiatedBy: string;
+  initiatorRole: 'DOCTOR' | 'PATIENT';
+  reason: string;
+  gate: EmergencyGateState;
+  location: EmergencyDispatchPayload['location'];
+  callbackPhone?: string;
+  now?: Date;
+  dispatchId?: string;
+}
+
+/**
+ * Builds the dispatch payload. Refuses unless the confirmation gate is in the
+ * `confirmed` state — the gate is enforced here too, not only in the UI.
+ */
+export function buildEmergencyDispatchPayload(input: BuildEmergencyDispatchInput): EmergencyDispatchPayload {
+  if (input.gate.status !== 'confirmed') {
+    throw new Error('Emergency dispatch requires two-step confirmation.');
+  }
+  if (!input.reason.trim()) throw new Error('A reason for the emergency dispatch is required.');
+  return {
+    type: 'heliora.emergency_dispatch.v1',
+    dispatchId: input.dispatchId ?? randomDispatchId(),
+    appointmentId: input.appointmentId,
+    patientAddress: input.patientAddress,
+    initiatedBy: input.initiatedBy,
+    initiatorRole: input.initiatorRole,
+    reason: input.reason.trim(),
+    location: input.location,
+    ...(input.callbackPhone ? { callbackPhone: input.callbackPhone } : {}),
+    confirmation: { armedAt: input.gate.armedAt, confirmedAt: input.gate.confirmedAt },
+    issuedAt: (input.now ?? new Date()).toISOString(),
+  };
+}
+
+/** Signs the canonical payload with the initiator's Stellar key (SEP-53, e.g. via Freighter). */
+export async function signEmergencyDispatch(
+  payload: EmergencyDispatchPayload,
+  signMessage: MessageSigner,
+): Promise<SignedEmergencyDispatch> {
+  const message = canonicalJson(payload);
+  const signature = await signMessage(message, payload.initiatedBy);
+  return { payload, message, signature };
+}
+
+/** Receiver-side check (also used by tests): signature valid and bytes match the payload. */
+export function verifyEmergencyDispatch(signed: SignedEmergencyDispatch): boolean {
+  return (
+    signed.message === canonicalJson(signed.payload) &&
+    verifySignedMessage(signed.payload.initiatedBy, signed.message, signed.signature)
+  );
+}
+
+export const EMERGENCY_WEBHOOK_URL =
+  process.env.NEXT_PUBLIC_EMERGENCY_WEBHOOK_URL || '/api/emergency/dispatch';
+
+export interface DispatchEmergencyOptions {
+  endpoint?: string;
+  fetchImpl?: typeof fetch;
+  /** Attempts for transient (network / 5xx) failures. Emergency delivery retries quickly. */
+  maxAttempts?: number;
+  retryDelayMs?: number;
+}
+
+export interface EmergencyDispatchReceipt {
+  dispatchId: string;
+  status: number;
+  attempts: number;
+  body: unknown;
+}
+
+/**
+ * POSTs the signed dispatch to the emergency webhook. The signature travels
+ * in headers as well as the body; `Idempotency-Key` is the dispatch id so a
+ * retried request can never page responders twice.
+ */
+export async function dispatchEmergencyWebhook(
+  signed: SignedEmergencyDispatch,
+  options: DispatchEmergencyOptions = {},
+): Promise<EmergencyDispatchReceipt> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const endpoint = options.endpoint ?? EMERGENCY_WEBHOOK_URL;
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const retryDelayMs = options.retryDelayMs ?? 1000;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': signed.payload.dispatchId,
+          'X-Heliora-Signer': signed.payload.initiatedBy,
+          'X-Heliora-Signature': signed.signature,
+          'X-Heliora-Signature-Scheme': 'sep53-ed25519',
+        },
+        body: JSON.stringify(signed),
+      });
+      const body: unknown = await res.json().catch(() => null);
+      if (res.ok) {
+        return { dispatchId: signed.payload.dispatchId, status: res.status, attempts: attempt, body };
+      }
+      lastError = new Error(`Emergency webhook responded ${res.status}`);
+      // 4xx means the request itself is wrong; retrying will not help.
+      if (res.status < 500) break;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
+    if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, retryDelayMs));
+  }
+  throw lastError ?? new Error('Emergency dispatch failed.');
+}

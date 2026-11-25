@@ -13,6 +13,9 @@ import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
 import ConsultationToolbar from './ConsultationToolbar';
 import VideoSettingsModal, { describeBackgroundEffect } from './VideoSettingsModal';
+import RemoteAudio from './RemoteAudio';
+import FeedbackNotice from './FeedbackNotice';
+import EmergencyDispatchModal from './EmergencyDispatchModal';
 import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
 import {
   getSpeechRecognitionConstructor,
@@ -21,13 +24,15 @@ import {
   type ISpeechRecognitionEvent,
 } from '@/lib/transcription';
 import { useConsultationMedia } from '@/hooks/useConsultationMedia';
+import { useAudioOutput, useFeedbackSuppression } from '@/hooks/useCallAudio';
+import { useAuthStore } from '@/store/authStore';
 import type {
   TranscriptSegment,
   TranscriptionConsentState,
   ReconnectionStatus,
   ClinicalDraftNote,
 } from '@/types';
-import { Mic, PhoneOff, CheckCircle2 } from 'lucide-react';
+import { Mic, PhoneOff, CheckCircle2, Siren } from 'lucide-react';
 
 interface Props {
   appointmentId: string;
@@ -80,6 +85,16 @@ export default function ConsultationView({
   const media = useConsultationMedia({ localStream, peerConnection });
   const [showVideoSettings, setShowVideoSettings] = useState(false);
   const outgoingStream = media.outgoingStream;
+
+  /* ── Speaker selection (#267) & acoustic feedback ducking (#269) ── */
+  const audioOutput = useAudioOutput();
+  const localMicTrack = localStream?.getAudioTracks()[0] ?? null;
+  const feedback = useFeedbackSuppression(localMicTrack);
+
+  /* ── In-call emergency dispatch (#268) ─────────────────────────── */
+  const walletAddress = useAuthStore((state) => state.walletAddress);
+  const userRole = useAuthStore((state) => state.role);
+  const [showEmergency, setShowEmergency] = useState(false);
 
   /* ── Automated Reconnection & State Recovery (#66) ────────────────── */
   const [reconnectionStatus, setReconnectionStatus] = useState<ReconnectionStatus>({
@@ -585,6 +600,11 @@ export default function ConsultationView({
                 />
               )}
 
+              {/* Acoustic feedback notice; playback ducked by 20 dB (#269) */}
+              {feedback.ducked && (
+                <FeedbackNotice frequencyHz={feedback.frequencyHz} onDismiss={feedback.dismiss} />
+              )}
+
               {/* Real-time Subtitles Across Lower Third of Video (#64) */}
               <LiveSubtitles
                 activeSegment={activeSegment}
@@ -699,6 +719,25 @@ export default function ConsultationView({
           onClose={() => setShowVideoSettings(false)}
           previewStream={media.previewStream}
           stats={media.backgroundStats}
+          audioOutput={audioOutput}
+        />
+      )}
+
+      {/* Remote participant audio: routed to the chosen speaker, ducked on feedback */}
+      <RemoteAudio
+        peerConnection={peerConnection}
+        gain={feedback.gain}
+        registerElement={audioOutput.registerElement}
+        unregisterElement={audioOutput.unregisterElement}
+      />
+
+      {showEmergency && (
+        <EmergencyDispatchModal
+          appointmentId={appointmentId}
+          patientAddress={patientAddress}
+          initiatorAddress={walletAddress}
+          initiatorRole={userRole === 'PATIENT' ? 'PATIENT' : 'DOCTOR'}
+          onClose={() => setShowEmergency(false)}
         />
       )}
 
