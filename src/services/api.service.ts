@@ -359,8 +359,22 @@ export const rollbackBatchRecords = (patientAddress: string, recordIds: string[]
 export const fetchEncounterNote = (appointmentId: string) =>
   api.get<EncounterNote>(`/appointments/${appointmentId}/notes`).then((r) => r.data);
 
-export const saveEncounterNote = (appointmentId: string, content: string) =>
-  api.post<EncounterNote>(`/appointments/${appointmentId}/notes`, { content }).then((r) => r.data);
+/**
+ * Saves an encounter note. `expectedUpdatedAt` is the server version the edit
+ * was based on (#266); a backend that supports optimistic concurrency rejects
+ * the write with 409 when the stored note has moved on since then.
+ */
+export const saveEncounterNote = (
+  appointmentId: string,
+  content: string,
+  options: { expectedUpdatedAt?: string | null } = {},
+) =>
+  api
+    .post<EncounterNote>(`/appointments/${appointmentId}/notes`, {
+      content,
+      ...(options.expectedUpdatedAt !== undefined ? { expectedUpdatedAt: options.expectedUpdatedAt } : {}),
+    })
+    .then((r) => r.data);
 
 // Doctor Availability Configuration
 

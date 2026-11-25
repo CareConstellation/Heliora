@@ -288,3 +288,84 @@ export function useRefundPatientMutation(options?: {
   });
 }
 
+
+/* ─── Encounter (SOAP) Note Auto-save with Conflict Detection (#266) ── */
+
+import { fetchEncounterNote, saveEncounterNote } from '@/services/api.service';
+import { detectNoteConflict, EncounterNoteConflictError } from '@/lib/soapNotes';
+import type { EncounterNote } from '@/types';
+
+export const SAVE_ENCOUNTER_NOTE_MUTATION_KEY = ['encounter-note', 'save'] as const;
+
+export interface SaveEncounterNoteInput {
+  content: string;
+  /** Server version the local edits were based on. */
+  baseUpdatedAt: string | null;
+  /** Overwrite the remote copy after the user chose "Keep mine" on a conflict. */
+  force?: boolean;
+}
+
+export interface EncounterNoteApi {
+  fetch: (appointmentId: string) => Promise<EncounterNote | null>;
+  save: (
+    appointmentId: string,
+    content: string,
+    options: { expectedUpdatedAt?: string | null },
+  ) => Promise<EncounterNote>;
+}
+
+const isStatus = (err: unknown, status: number) =>
+  typeof err === 'object' && err !== null && (err as { status?: number }).status === status;
+
+const defaultNoteApi: EncounterNoteApi = {
+  fetch: (id) =>
+    fetchEncounterNote(id).catch((err: unknown) => {
+      if (isStatus(err, 404)) return null;
+      throw err;
+    }),
+  save: saveEncounterNote,
+};
+
+/**
+ * Saves a note only if the server copy is still the version the edits were
+ * based on. The client compares versions first (works against any backend)
+ * and also sends `expectedUpdatedAt` so a backend with optimistic concurrency
+ * closes the race between that check and the write; a 409 from it is turned
+ * into the same {@link EncounterNoteConflictError}.
+ *
+ * Time: O(n) in note length for the content comparison.
+ */
+export async function saveEncounterNoteWithConflictCheck(
+  appointmentId: string,
+  input: SaveEncounterNoteInput,
+  noteApi: EncounterNoteApi = defaultNoteApi,
+): Promise<EncounterNote> {
+  const remote = await noteApi.fetch(appointmentId);
+  if (!input.force && detectNoteConflict({ baseUpdatedAt: input.baseUpdatedAt, localContent: input.content, remote })) {
+    throw new EncounterNoteConflictError(remote!);
+  }
+  const expectedUpdatedAt = input.force ? (remote?.updatedAt ?? null) : input.baseUpdatedAt;
+  try {
+    return await noteApi.save(appointmentId, input.content, { expectedUpdatedAt });
+  } catch (err) {
+    if (isStatus(err, 409)) {
+      const latest = await noteApi.fetch(appointmentId);
+      if (latest) throw new EncounterNoteConflictError(latest);
+    }
+    throw err;
+  }
+}
+
+export function useSaveEncounterNoteMutation(
+  appointmentId: string,
+  options: { noteApi?: EncounterNoteApi } = {},
+) {
+  const queryClient = useQueryClient();
+  return useMutation<EncounterNote, Error, SaveEncounterNoteInput>({
+    mutationKey: [...SAVE_ENCOUNTER_NOTE_MUTATION_KEY, appointmentId],
+    mutationFn: (input) => saveEncounterNoteWithConflictCheck(appointmentId, input, options.noteApi),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['encounter-note', appointmentId], data);
+    },
+  });
+}
