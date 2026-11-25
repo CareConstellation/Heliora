@@ -9,6 +9,7 @@ import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
 import VideoGrid from './VideoGrid';
+import VitalsPanel from './VitalsPanel';
 import ReconnectionOverlay from './ReconnectionOverlay';
 import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
@@ -33,7 +34,7 @@ interface Props {
   doctorName: string;
 }
 
-type Tab = 'records' | 'notes' | 'chat';
+type Tab = 'records' | 'notes' | 'chat' | 'vitals';
 
 const MIN_RATIO = 0.25;
 const MAX_RATIO = 0.75;
@@ -495,7 +496,7 @@ export default function ConsultationView({
           style={{ width: rightWidth }}
         >
           <div className="flex border-b border-border shrink-0">
-            {(['records', 'notes', 'chat'] as Tab[]).map((tab) => (
+            {(['records', 'notes', 'chat', 'vitals'] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -505,7 +506,13 @@ export default function ConsultationView({
                     : 'text-text-3 hover:text-text-1'
                 }`}
               >
-                {tab === 'records' ? 'Medical Records' : tab === 'notes' ? 'Encounter Notes' : 'Secure Chat'}
+                {tab === 'records'
+                  ? 'Medical Records'
+                  : tab === 'notes'
+                    ? 'Encounter Notes'
+                    : tab === 'chat'
+                      ? 'Secure Chat'
+                      : 'Vitals'}
               </button>
             ))}
           </div>
@@ -521,6 +528,7 @@ export default function ConsultationView({
               />
             )}
             {activeTab === 'chat' && <EncryptedChat appointmentId={appointmentId} />}
+            {activeTab === 'vitals' && <VitalsPanel />}
           </div>
         </div>
       </div>
