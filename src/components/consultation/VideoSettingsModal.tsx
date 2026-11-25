@@ -1,13 +1,25 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { AlertCircle, Droplets, ImageIcon, VideoOff, X } from 'lucide-react';
+import { AlertCircle, Droplets, ImageIcon, Speaker, VideoOff, Volume2, X } from 'lucide-react';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import {
   CLINICAL_BACKDROPS,
   type BackgroundEffectSettings,
   type BackgroundEffectStats,
 } from '@/lib/videoBackgroundBlur';
+import type { AudioOutputDevice } from '@/lib/video';
+
+/** Speaker selection controls (#267); see `useAudioOutput`. */
+export interface AudioOutputSettings {
+  supported: boolean;
+  devices: AudioOutputDevice[];
+  selectedId: string;
+  selectDevice: (deviceId: string) => void;
+  testSpeaker: () => void | Promise<void>;
+  testState: 'idle' | 'playing' | 'error';
+  error?: string | null;
+}
 
 interface Props {
   settings: BackgroundEffectSettings;
@@ -16,6 +28,8 @@ interface Props {
   /** Processed stream to preview; omitted when no camera is attached. */
   previewStream?: MediaStream | null;
   stats?: BackgroundEffectStats | null;
+  /** When provided, a speaker picker with a test sound is shown. */
+  audioOutput?: AudioOutputSettings;
 }
 
 interface Option {
@@ -66,7 +80,14 @@ export function describeBackgroundEffect(settings: BackgroundEffectSettings): st
  * Privacy backdrop picker (#255): blur intensity (Light / Strong) or a
  * clinical backdrop, with a live preview and frame-rate readout.
  */
-export default function VideoSettingsModal({ settings, onChange, onClose, previewStream, stats }: Props) {
+export default function VideoSettingsModal({
+  settings,
+  onChange,
+  onClose,
+  previewStream,
+  stats,
+  audioOutput,
+}: Props) {
   const modalRef = useFocusTrap<HTMLDivElement>(true, onClose);
   const previewRef = useRef<HTMLVideoElement>(null);
   const selected = optionKeyFor(settings);
@@ -192,6 +213,8 @@ export default function VideoSettingsModal({ settings, onChange, onClose, previe
           </div>
         </fieldset>
 
+        {audioOutput && <SpeakerSection {...audioOutput} />}
+
         <div className="flex justify-end">
           <button
             type="button"
@@ -203,5 +226,63 @@ export default function VideoSettingsModal({ settings, onChange, onClose, previe
         </div>
       </div>
     </div>
+  );
+}
+
+function SpeakerSection({
+  supported,
+  devices,
+  selectedId,
+  selectDevice,
+  testSpeaker,
+  testState,
+  error,
+}: AudioOutputSettings) {
+  return (
+    <section aria-labelledby="speaker-settings-title" className="space-y-2 border-t border-border pt-4">
+      <h4 id="speaker-settings-title" className="flex items-center gap-1.5 text-xs font-semibold text-text-1">
+        <Speaker className="h-3.5 w-3.5" aria-hidden="true" />
+        Speaker
+      </h4>
+      {supported ? (
+        <div className="flex items-center gap-2">
+          <label htmlFor="audio-output-select" className="sr-only">
+            Audio output device
+          </label>
+          <select
+            id="audio-output-select"
+            value={selectedId}
+            onChange={(e) => selectDevice(e.target.value)}
+            className="min-w-0 flex-1 rounded-md border border-border bg-surface-inset px-2 py-1.5 text-xs text-text-1 focus:outline-none focus:ring-2 focus:ring-border-focus"
+          >
+            {!devices.some((d) => d.deviceId === 'default') && <option value="default">System default</option>}
+            {devices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void testSpeaker()}
+            disabled={testState === 'playing'}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover disabled:opacity-50"
+          >
+            <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
+            {testState === 'playing' ? 'Playing…' : 'Test Speaker'}
+          </button>
+        </div>
+      ) : (
+        <p className="text-3xs text-text-3">
+          This browser always plays call audio through the system output. Change it in your operating system
+          sound settings.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-3xs text-red-600">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
