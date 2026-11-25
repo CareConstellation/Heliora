@@ -8,8 +8,8 @@ import {
   deriveChatSessionKey,
   destroyChatSession,
   encryptChatMessage,
-} from '@/lib/crypto';
-import type { ChatEphemeralKeyPair, EncryptedChatPayload } from '@/lib/crypto';
+} from '@/lib/cryptoChat';
+import type { ChatEphemeralKeyPair, EncryptedChatPayload } from '@/lib/cryptoChat';
 
 interface Props {
   appointmentId: string;

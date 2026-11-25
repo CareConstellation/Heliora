@@ -1284,3 +1284,52 @@ export async function computeRecordCommitment(
   return poseidonHash([idElem, patientElem, diagElem, dateElem, saltElem]);
 }
 
+
+/* ── Encrypted encounter snapshots (#263) ───────────────────────────── */
+
+/** Ciphertext and IV for one snapshot, encrypted with an encounter key. */
+export interface EncryptedSnapshotPayload {
+  iv: Uint8Array<ArrayBuffer>;
+  ciphertext: ArrayBuffer;
+}
+
+/**
+ * Creates a fresh AES-256-GCM key for one consultation. The key is extractable so
+ * it can be exported with {@link exportKey} and stored with the encounter record.
+ */
+export async function createEncounterKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+}
+
+/**
+ * Encrypts a snapshot buffer with the encounter key. The encounter ID is bound as
+ * additional authenticated data, so a snapshot cannot be decrypted under another
+ * encounter's ID. A new random 96-bit IV is used for every call.
+ */
+export async function encryptEncounterSnapshot(
+  plaintext: ArrayBuffer,
+  key: CryptoKey,
+  encounterId: string,
+): Promise<EncryptedSnapshotPayload> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const additionalData = new TextEncoder().encode(encounterId);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData }, key, plaintext);
+  return { iv, ciphertext };
+}
+
+/**
+ * Decrypts a snapshot produced by {@link encryptEncounterSnapshot}. Rejects when the
+ * key, the encounter ID, or the ciphertext does not match.
+ */
+export async function decryptEncounterSnapshot(
+  payload: EncryptedSnapshotPayload,
+  key: CryptoKey,
+  encounterId: string,
+): Promise<ArrayBuffer> {
+  const additionalData = new TextEncoder().encode(encounterId);
+  return crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: payload.iv, additionalData },
+    key,
+    payload.ciphertext,
+  );
+}

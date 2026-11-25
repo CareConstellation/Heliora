@@ -164,3 +164,76 @@ export function compareBiomarkers(
     commonDates,
   };
 }
+
+/* ── In-call vitals from Bluetooth GATT devices (#261) ───────────────── */
+
+export type VitalSignKind = 'heart-rate' | 'spo2';
+
+export interface VitalSample {
+  kind: VitalSignKind;
+  value: number;
+  unit: 'bpm' | '%';
+  /** Epoch milliseconds when the sample was received on this device. */
+  timestamp: number;
+}
+
+const MAX_PLAUSIBLE_HEART_RATE_BPM = 300;
+const MAX_PLAUSIBLE_PULSE_RATE_BPM = 300;
+
+/**
+ * Decodes an IEEE-11073 16-bit SFLOAT used by pulse oximetry characteristics.
+ * The low 12 bits are a signed mantissa and the high 4 bits a signed exponent.
+ * Returns `null` for the reserved special values (NaN, NRes, ±INF).
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function decodeSfloat(raw: number): number | null {
+  const mantissaBits = raw & 0x0fff;
+  // 0x07FE (+INF), 0x07FF (NaN), 0x0800 (NRes), 0x0801 (reserved), 0x0802 (-INF)
+  if (mantissaBits >= 0x07fe && mantissaBits <= 0x0802) return null;
+
+  const exponentBits = (raw >> 12) & 0x0f;
+  const mantissa = mantissaBits >= 0x0800 ? mantissaBits - 0x1000 : mantissaBits;
+  const exponent = exponentBits >= 0x08 ? exponentBits - 0x10 : exponentBits;
+  return mantissa * 10 ** exponent;
+}
+
+/**
+ * Parses a Heart Rate Measurement notification (GATT 0x2A37).
+ * Byte 0 holds flags; bit 0 set means the heart rate is a little-endian uint16
+ * at bytes 1-2, otherwise it is a uint8 at byte 1.
+ * Returns the beats per minute, or `null` for a malformed or implausible payload.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function parseHeartRateMeasurement(view: DataView): number | null {
+  if (view.byteLength < 2) return null;
+
+  const uses16Bit = (view.getUint8(0) & 0x01) === 0x01;
+  if (uses16Bit && view.byteLength < 3) return null;
+
+  const bpm = uses16Bit ? view.getUint16(1, true) : view.getUint8(1);
+  return bpm > 0 && bpm <= MAX_PLAUSIBLE_HEART_RATE_BPM ? bpm : null;
+}
+
+/**
+ * Parses a PLX Continuous Measurement notification (GATT 0x2A5F).
+ * Layout: flags (uint8), SpO2 (SFLOAT, percent), pulse rate (SFLOAT, bpm),
+ * followed by optional fields that are ignored here.
+ * Returns `null` for a malformed payload or one with a reserved SFLOAT value.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function parsePulseOximeterContinuous(
+  view: DataView,
+): { spo2: number; pulseRate: number } | null {
+  if (view.byteLength < 5) return null;
+
+  const spo2 = decodeSfloat(view.getUint16(1, true));
+  const pulseRate = decodeSfloat(view.getUint16(3, true));
+  if (spo2 === null || pulseRate === null) return null;
+  if (spo2 < 0 || spo2 > 100) return null;
+  if (pulseRate < 0 || pulseRate > MAX_PLAUSIBLE_PULSE_RATE_BPM) return null;
+
+  return { spo2, pulseRate };
+}

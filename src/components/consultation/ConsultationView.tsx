@@ -1,21 +1,49 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { CheckCircle2, Mic, PhoneOff } from 'lucide-react';
 import PictureInPictureVideo from './PictureInPictureVideo';
 import MedicalRecordPanel from './MedicalRecordPanel';
 import EncounterNotes from './EncounterNotes';
 import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
+import ReconnectionOverlay from './ReconnectionOverlay';
+import LiveSubtitles from './LiveSubtitles';
+import TranscriptionConsentModal from './TranscriptionConsentModal';
+import ConsultationToolbar from './ConsultationToolbar';
+import VideoSettingsModal, { describeBackgroundEffect } from './VideoSettingsModal';
+import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
+import {
+  getSpeechRecognitionConstructor,
+  summarizeClinicalEncounter,
+  type ISpeechRecognition,
+  type ISpeechRecognitionEvent,
+} from '@/lib/transcription';
+import { useConsultationMedia } from '@/hooks/useConsultationMedia';
+import type {
+  TranscriptSegment,
+  TranscriptionConsentState,
+  ReconnectionStatus,
+  ClinicalDraftNote,
+} from '@/types';
+import { Mic, PhoneOff, CheckCircle2 } from 'lucide-react';
 
 interface Props {
   appointmentId: string;
   patientAddress: string;
   videoRoomUrl: string;
   doctorName: string;
+  /**
+   * Local camera/microphone stream. When provided, audio runs through the
+   * noise cancellation graph (#256) and video through background effects (#255).
+   */
+  localStream?: MediaStream | null;
+  /** Call peer connection. When provided, adaptive bitrate control runs (#254). */
+  peerConnection?: RTCPeerConnection | null;
 }
 
-type Tab = 'records' | 'notes' | 'chat';
+type Tab = 'records' | 'notes' | 'chat' | 'vitals';
 
 const MIN_RATIO = 0.25;
 const MAX_RATIO = 0.75;
@@ -25,6 +53,8 @@ export default function ConsultationView({
   patientAddress,
   videoRoomUrl,
   doctorName,
+  localStream = null,
+  peerConnection = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -40,6 +70,11 @@ export default function ConsultationView({
     height: 450,
   });
 
+  /* ── Media processing: ABR (#254), backdrops (#255), noise cancel (#256) ── */
+  const media = useConsultationMedia({ localStream, peerConnection });
+  const [showVideoSettings, setShowVideoSettings] = useState(false);
+  const outgoingStream = media.outgoingStream;
+
   /* ── Automated Reconnection & State Recovery (#66) ────────────────── */
   const [reconnectionStatus, setReconnectionStatus] = useState<ReconnectionStatus>({
     state: 'connected',
@@ -50,6 +85,7 @@ export default function ConsultationView({
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
+      peerConnection,
       timeoutMs: 30_000,
       onStatusChange: (status) => {
         setReconnectionStatus(status);
@@ -65,14 +101,14 @@ export default function ConsultationView({
       onTimeout: () => {
         console.warn('Consultation reconnection timed out after 30 seconds.');
       },
-      getLocalMediaStream: () => screenStream,
+      getLocalMediaStream: () => outgoingStream ?? screenStream,
     });
 
     reconnectionManagerRef.current = manager;
     return () => {
       manager.cleanup();
     };
-  }, [screenStream]);
+  }, [screenStream, outgoingStream, peerConnection]);
 
   /* ── Audio Transcription & Mutual Consent (#64) ──────────────────── */
   const [consentState, setConsentState] = useState<TranscriptionConsentState>({
@@ -261,11 +297,9 @@ export default function ConsultationView({
   }, [appointmentId, patientAddress, transcripts, doctorName]);
 
   /* ── Existing Screen Share & Divider Logic ───────────────────────── */
-  useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream;
-    }
-  }, [screenStream]);
+  const handleScreenVideoElement = useCallback((_tileId: string, element: HTMLVideoElement | null) => {
+    screenVideoRef.current = element;
+  }, []);
 
   const handleDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -317,6 +351,42 @@ export default function ConsultationView({
     setIsAnnotating(false);
   }
 
+  // One AES-GCM key per consultation, held in memory only.
+  useEffect(() => {
+    let cancelled = false;
+    createEncounterKey()
+      .then((key) => {
+        if (!cancelled) setEncounterKey(key);
+      })
+      .catch((err) => console.warn('Encounter key could not be created:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Capture notices reach other open views of this consultation.
+  useEffect(() => {
+    const channel = createSnapshotChannel(appointmentId, () => {
+      setCaptureNotice('A snapshot of this consultation was captured.');
+    });
+    snapshotChannelRef.current = channel;
+    return () => {
+      channel.close();
+      snapshotChannelRef.current = null;
+    };
+  }, [appointmentId]);
+
+  const handleSnapshotCaptured = useCallback((record: EncryptedSnapshotRecord) => {
+    setSnapshots((prev) => [...prev, record]);
+    snapshotChannelRef.current?.announce(record.capturedAt);
+    playCaptureChime();
+    setCaptureNotice('Snapshot captured. A capture notice was shared with this consultation.');
+  }, []);
+
+  const dismissCaptureNotice = useCallback(() => setCaptureNotice(null), []);
+
+  const getSnapshotSource = useCallback(() => screenVideoRef.current, []);
+
   function handleSaveSnapshot(blob: Blob) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -330,7 +400,7 @@ export default function ConsultationView({
   const rightWidth = isVideoMinimized ? '100%' : `${(1 - splitRatio) * 100}%`;
 
   return (
-    <div className="flex flex-col h-screen bg-surface-card">
+    <div className="relative flex flex-col h-screen bg-surface-card">
       {/* Consultation Toolbar */}
       <div className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-surface-card shrink-0">
         <h2 className="text-sm font-semibold text-text-1 mr-auto flex items-center gap-2">
@@ -376,6 +446,15 @@ export default function ConsultationView({
           )}
         </button>
 
+        <ConsultationToolbar
+          noiseCancellationEnabled={media.noiseCancellationEnabled}
+          noiseCancellationAvailable={media.noiseCancellationAvailable}
+          onToggleNoiseCancellation={media.toggleNoiseCancellation}
+          onOpenVideoSettings={() => setShowVideoSettings(true)}
+          backgroundEffectLabel={describeBackgroundEffect(media.backgroundSettings)}
+          connectionSample={media.connectionSample}
+        />
+
         {/* Video Controls */}
         <button
           type="button"
@@ -405,6 +484,16 @@ export default function ConsultationView({
           </button>
         )}
 
+        {screenStream && (
+          <button
+            type="button"
+            onClick={() => setShowSnapshot(true)}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+          >
+            Snapshot
+          </button>
+        )}
+
         {/* End Consultation Button */}
         <button
           type="button"
@@ -428,12 +517,9 @@ export default function ConsultationView({
             >
               {screenStream ? (
                 <div className="relative w-full h-full">
-                  <video
-                    ref={screenVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-contain bg-black"
+                  <VideoGrid
+                    tiles={[{ id: 'screen', label: 'Shared screen', stream: screenStream, muted: true }]}
+                    onVideoElement={handleScreenVideoElement}
                   />
                   {isAnnotating && (
                     <AnnotationCanvas
@@ -482,7 +568,7 @@ export default function ConsultationView({
           style={{ width: rightWidth }}
         >
           <div className="flex border-b border-border shrink-0">
-            {(['records', 'notes', 'chat'] as Tab[]).map((tab) => (
+            {(['records', 'notes', 'chat', 'vitals'] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -492,7 +578,13 @@ export default function ConsultationView({
                     : 'text-text-3 hover:text-text-1'
                 }`}
               >
-                {tab === 'records' ? 'Medical Records' : tab === 'notes' ? 'Encounter Notes' : 'Secure Chat'}
+                {tab === 'records'
+                  ? 'Medical Records'
+                  : tab === 'notes'
+                    ? 'Encounter Notes'
+                    : tab === 'chat'
+                      ? 'Secure Chat'
+                      : 'Vitals'}
               </button>
             ))}
           </div>
@@ -508,6 +600,7 @@ export default function ConsultationView({
               />
             )}
             {activeTab === 'chat' && <EncryptedChat appointmentId={appointmentId} />}
+            {activeTab === 'vitals' && <VitalsPanel />}
           </div>
         </div>
       </div>
@@ -526,6 +619,17 @@ export default function ConsultationView({
             isTranscribing={isTranscribing}
           />
         </div>
+      )}
+
+      {/* Background blur / clinical backdrop settings (#255) */}
+      {showVideoSettings && (
+        <VideoSettingsModal
+          settings={media.backgroundSettings}
+          onChange={media.setBackgroundSettings}
+          onClose={() => setShowVideoSettings(false)}
+          previewStream={media.previewStream}
+          stats={media.backgroundStats}
+        />
       )}
 
       {/* Mutual Consent Modal (#64) */}

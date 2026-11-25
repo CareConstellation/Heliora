@@ -113,9 +113,13 @@ Full API reference documenting all endpoints, request/response shapes, and authe
 
 Circuit parameters, security bounds and trusted setup steps: 📄 [`docs/zk-circuits.md`](./docs/zk-circuits.md)
 
+## Cryptography & Threat Model
+
+Cipher suites (AES-GCM, ML-KEM-768 hybrid KEM, Ed25519, ML-DSA, Poseidon), key management, STRIDE threat model and known gaps: 📄 [`docs/cryptography.md`](./docs/cryptography.md). See also [`SECURITY.md`](./SECURITY.md).
+
 ## Telemedicine & WebRTC Architecture
 
-Signaling/ICE sequence, dual-consent transcription, firewall ports, and troubleshooting: 📄 [`docs/telemedicine-architecture.md`](./docs/telemedicine-architecture.md)
+Signaling/ICE sequence, dual-consent transcription, adaptive bitrate, background blur, noise cancellation, firewall ports, and troubleshooting: 📄 [`docs/telemedicine-architecture.md`](./docs/telemedicine-architecture.md)
 
 ## Switching to Mainnet
 
