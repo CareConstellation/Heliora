@@ -10,6 +10,7 @@ import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
 import VideoGrid from './VideoGrid';
 import VitalsPanel from './VitalsPanel';
+import SnapshotModal, { CaptureNotice } from './SnapshotModal';
 import ReconnectionOverlay from './ReconnectionOverlay';
 import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
@@ -26,6 +27,13 @@ import type {
   TranscriptSegment,
   TranscriptionConsentState,
 } from '@/types';
+import { createEncounterKey } from '@/lib/crypto';
+import {
+  createSnapshotChannel,
+  playCaptureChime,
+  type EncryptedSnapshotRecord,
+  type SnapshotChannel,
+} from '@/lib/encounterSnapshot';
 
 interface Props {
   appointmentId: string;
@@ -58,6 +66,13 @@ export default function ConsultationView({
     width: 800,
     height: 450,
   });
+
+  /* ── Encrypted encounter snapshots & capture notice (#263) ─────── */
+  const [encounterKey, setEncounterKey] = useState<CryptoKey | null>(null);
+  const [snapshots, setSnapshots] = useState<EncryptedSnapshotRecord[]>([]);
+  const [showSnapshot, setShowSnapshot] = useState(false);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  const snapshotChannelRef = useRef<SnapshotChannel | null>(null);
 
   /* ── Automated Reconnection & State Recovery (#66) ────────────────── */
   const [reconnectionStatus, setReconnectionStatus] = useState<ReconnectionStatus>({
@@ -334,6 +349,42 @@ export default function ConsultationView({
     setIsAnnotating(false);
   }
 
+  // One AES-GCM key per consultation, held in memory only.
+  useEffect(() => {
+    let cancelled = false;
+    createEncounterKey()
+      .then((key) => {
+        if (!cancelled) setEncounterKey(key);
+      })
+      .catch((err) => console.warn('Encounter key could not be created:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Capture notices reach other open views of this consultation.
+  useEffect(() => {
+    const channel = createSnapshotChannel(appointmentId, () => {
+      setCaptureNotice('A snapshot of this consultation was captured.');
+    });
+    snapshotChannelRef.current = channel;
+    return () => {
+      channel.close();
+      snapshotChannelRef.current = null;
+    };
+  }, [appointmentId]);
+
+  const handleSnapshotCaptured = useCallback((record: EncryptedSnapshotRecord) => {
+    setSnapshots((prev) => [...prev, record]);
+    snapshotChannelRef.current?.announce(record.capturedAt);
+    playCaptureChime();
+    setCaptureNotice('Snapshot captured. A capture notice was shared with this consultation.');
+  }, []);
+
+  const dismissCaptureNotice = useCallback(() => setCaptureNotice(null), []);
+
+  const getSnapshotSource = useCallback(() => screenVideoRef.current, []);
+
   function handleSaveSnapshot(blob: Blob) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -347,7 +398,7 @@ export default function ConsultationView({
   const rightWidth = isVideoMinimized ? '100%' : `${(1 - splitRatio) * 100}%`;
 
   return (
-    <div className="flex flex-col h-screen bg-surface-card">
+    <div className="relative flex flex-col h-screen bg-surface-card">
       {/* Consultation Toolbar */}
       <div className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-surface-card shrink-0">
         <h2 className="text-sm font-semibold text-text-1 mr-auto flex items-center gap-2">
@@ -419,6 +470,16 @@ export default function ConsultationView({
             }`}
           >
             {isAnnotating ? 'Annotating' : 'Annotate'}
+          </button>
+        )}
+
+        {screenStream && (
+          <button
+            type="button"
+            onClick={() => setShowSnapshot(true)}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+          >
+            Snapshot
           </button>
         )}
 
@@ -547,6 +608,22 @@ export default function ConsultationView({
             isTranscribing={isTranscribing}
           />
         </div>
+      )}
+
+      {/* Capture indicator for encrypted snapshots (#263) */}
+      <CaptureNotice message={captureNotice} onDismiss={dismissCaptureNotice} />
+
+      {/* Encrypted Snapshot Capture (#263) */}
+      {showSnapshot && (
+        <SnapshotModal
+          appointmentId={appointmentId}
+          hasSource={!!screenStream}
+          getSource={getSnapshotSource}
+          encounterKey={encounterKey}
+          snapshots={snapshots}
+          onCaptured={handleSnapshotCaptured}
+          onClose={() => setShowSnapshot(false)}
+        />
       )}
 
       {/* Mutual Consent Modal (#64) */}
