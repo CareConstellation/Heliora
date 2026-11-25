@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { CheckCircle2, Mic, PhoneOff } from 'lucide-react';
 import PictureInPictureVideo from './PictureInPictureVideo';
 import MedicalRecordPanel from './MedicalRecordPanel';
 import EncounterNotes from './EncounterNotes';
@@ -47,7 +48,7 @@ interface Props {
   peerConnection?: RTCPeerConnection | null;
 }
 
-type Tab = 'records' | 'notes' | 'chat';
+type Tab = 'records' | 'notes' | 'chat' | 'vitals';
 
 const MIN_RATIO = 0.25;
 const MAX_RATIO = 0.75;
@@ -63,6 +64,12 @@ export default function ConsultationView({
   const containerRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const isDragging = useRef(false);
+  const callStartedAtRef = useRef<number | null>(null);
+
+  // Start the visit clock once the consultation is on screen (#271).
+  useEffect(() => {
+    callStartedAtRef.current = Date.now();
+  }, []);
 
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isVideoMinimized, setIsVideoMinimized] = useState(false);
@@ -96,6 +103,9 @@ export default function ConsultationView({
     attemptCount: 0,
   });
   const reconnectionManagerRef = useRef<ReconnectionManager | null>(null);
+  const [isAudioOnly, setIsAudioOnly] = useState(false);
+  const [isPiPAvailable, setIsPiPAvailable] = useState(false);
+  const [isNativePiPActive, setIsNativePiPActive] = useState(false);
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
@@ -308,14 +318,17 @@ export default function ConsultationView({
     );
     setDraftNote(note);
     setActiveTab('notes');
-  }, [appointmentId, patientAddress, transcripts, doctorName]);
+
+    onCallEnded?.({
+      durationMs: callStartedAtRef.current === null ? 0 : Date.now() - callStartedAtRef.current,
+      draft: note,
+    });
+  }, [appointmentId, patientAddress, transcripts, doctorName, onCallEnded]);
 
   /* ── Existing Screen Share & Divider Logic ───────────────────────── */
-  useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream;
-    }
-  }, [screenStream]);
+  const handleScreenVideoElement = useCallback((_tileId: string, element: HTMLVideoElement | null) => {
+    screenVideoRef.current = element;
+  }, []);
 
   const handleDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -358,6 +371,39 @@ export default function ConsultationView({
     return () => observer.disconnect();
   }, [splitRatio]);
 
+  /* ── Native Picture-in-Picture for the shared screen (#265) ───────── */
+  useEffect(() => {
+    setIsPiPAvailable(isPictureInPictureAvailable(document));
+  }, []);
+
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video || !screenStream) return;
+
+    const onEnter = () => setIsNativePiPActive(true);
+    const onLeave = () => setIsNativePiPActive(false);
+    video.addEventListener('enterpictureinpicture', onEnter);
+    video.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', onEnter);
+      video.removeEventListener('leavepictureinpicture', onLeave);
+      // The element may be gone, so the browser may not fire leavepictureinpicture.
+      setIsNativePiPActive(false);
+    };
+  }, [screenStream, isVideoMinimized]);
+
+  async function handleTogglePiP() {
+    const video = screenVideoRef.current;
+    if (!video) return;
+
+    try {
+      setIsNativePiPActive(await toggleVideoPictureInPicture(video, document));
+    } catch (err) {
+      console.warn('Picture-in-Picture request failed:', err);
+      setIsNativePiPActive(false);
+    }
+  }
+
   function handleScreenStart(stream: MediaStream) {
     setScreenStream(stream);
   }
@@ -366,6 +412,42 @@ export default function ConsultationView({
     setScreenStream(null);
     setIsAnnotating(false);
   }
+
+  // One AES-GCM key per consultation, held in memory only.
+  useEffect(() => {
+    let cancelled = false;
+    createEncounterKey()
+      .then((key) => {
+        if (!cancelled) setEncounterKey(key);
+      })
+      .catch((err) => console.warn('Encounter key could not be created:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Capture notices reach other open views of this consultation.
+  useEffect(() => {
+    const channel = createSnapshotChannel(appointmentId, () => {
+      setCaptureNotice('A snapshot of this consultation was captured.');
+    });
+    snapshotChannelRef.current = channel;
+    return () => {
+      channel.close();
+      snapshotChannelRef.current = null;
+    };
+  }, [appointmentId]);
+
+  const handleSnapshotCaptured = useCallback((record: EncryptedSnapshotRecord) => {
+    setSnapshots((prev) => [...prev, record]);
+    snapshotChannelRef.current?.announce(record.capturedAt);
+    playCaptureChime();
+    setCaptureNotice('Snapshot captured. A capture notice was shared with this consultation.');
+  }, []);
+
+  const dismissCaptureNotice = useCallback(() => setCaptureNotice(null), []);
+
+  const getSnapshotSource = useCallback(() => screenVideoRef.current, []);
 
   function handleSaveSnapshot(blob: Blob) {
     const url = URL.createObjectURL(blob);
@@ -380,7 +462,7 @@ export default function ConsultationView({
   const rightWidth = isVideoMinimized ? '100%' : `${(1 - splitRatio) * 100}%`;
 
   return (
-    <div className="flex flex-col h-screen bg-surface-card">
+    <div className="relative flex flex-col h-screen bg-surface-card">
       {/* Consultation Toolbar */}
       <div className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-surface-card shrink-0">
         <h2 className="text-sm font-semibold text-text-1 mr-auto flex items-center gap-2">
@@ -464,15 +546,15 @@ export default function ConsultationView({
           </button>
         )}
 
-        {/* Emergency dispatch (#268): opens a two-step confirmation dialog */}
-        <button
-          type="button"
-          onClick={() => setShowEmergency(true)}
-          className="flex items-center gap-1.5 rounded-md border border-red-500/50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-500/10 transition-colors"
-        >
-          <Siren className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Emergency</span>
-        </button>
+        {screenStream && (
+          <button
+            type="button"
+            onClick={() => setShowSnapshot(true)}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+          >
+            Snapshot
+          </button>
+        )}
 
         {/* End Consultation Button */}
         <button
@@ -497,12 +579,9 @@ export default function ConsultationView({
             >
               {screenStream ? (
                 <div className="relative w-full h-full">
-                  <video
-                    ref={screenVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-contain bg-black"
+                  <VideoGrid
+                    tiles={[{ id: 'screen', label: 'Shared screen', stream: screenStream, muted: true }]}
+                    onVideoElement={handleScreenVideoElement}
                   />
                   {isAnnotating && (
                     <AnnotationCanvas
@@ -533,10 +612,33 @@ export default function ConsultationView({
                 isTranscribing={isTranscribing}
               />
 
-              {/* Automated Reconnection Overlay with 30s Timeout (#66) */}
+              {/* Audio-only mode keeps the call's audio running behind this card (#270) */}
+              {isAudioOnly && !screenStream && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-surface-card p-6 text-center">
+                  <Mic className="w-6 h-6 text-green" />
+                  <p className="text-sm font-semibold text-text-1">Audio-only mode</p>
+                  <p className="text-xs text-text-3 max-w-xs">
+                    The call continues with sound. Turn off your camera in the call controls to stop
+                    sending video.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsAudioOnly(false)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-1 hover:bg-surface-hover transition-colors"
+                  >
+                    Show video
+                  </button>
+                </div>
+              )}
+
+              {/* Automated Reconnection Overlay with 30s countdown (#66, #270) */}
               <ReconnectionOverlay
                 status={reconnectionStatus}
                 onRetry={() => reconnectionManagerRef.current?.retry()}
+                onSwitchToAudioOnly={() => {
+                  setIsAudioOnly(true);
+                  setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
+                }}
                 onDismiss={() => {
                   setReconnectionStatus((prev) => ({ ...prev, state: 'connected' }));
                 }}
@@ -556,7 +658,7 @@ export default function ConsultationView({
           style={{ width: rightWidth }}
         >
           <div className="flex border-b border-border shrink-0">
-            {(['records', 'notes', 'chat'] as Tab[]).map((tab) => (
+            {(['records', 'notes', 'chat', 'vitals'] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -566,7 +668,13 @@ export default function ConsultationView({
                     : 'text-text-3 hover:text-text-1'
                 }`}
               >
-                {tab === 'records' ? 'Medical Records' : tab === 'notes' ? 'Encounter Notes' : 'Secure Chat'}
+                {tab === 'records'
+                  ? 'Medical Records'
+                  : tab === 'notes'
+                    ? 'Encounter Notes'
+                    : tab === 'chat'
+                      ? 'Secure Chat'
+                      : 'Vitals'}
               </button>
             ))}
           </div>
@@ -582,6 +690,7 @@ export default function ConsultationView({
               />
             )}
             {activeTab === 'chat' && <EncryptedChat appointmentId={appointmentId} />}
+            {activeTab === 'vitals' && <VitalsPanel />}
           </div>
         </div>
       </div>
