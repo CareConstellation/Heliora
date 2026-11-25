@@ -1,12 +1,10 @@
 'use client';
 
-import { Suspense, useCallback, useState } from 'react';
+import { Suspense, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
-import PostConsultationSummaryModal from '@/components/consultation/PostConsultationSummaryModal';
-import type { ConsultationEndPayload } from '@/components/consultation/ConsultationView';
-import { buildVisitSummary, type VisitSummary } from '@/lib/visitSummary';
+import PreCallDiagnostic from '@/components/consultation/PreCallDiagnostic';
 
 const ConsultationView = dynamic(
   () => import('@/components/consultation/ConsultationView'),
@@ -31,6 +29,7 @@ function ConsultationContent() {
   const patientAddress = params.get('patient') ?? '';
   const videoRoomUrl = params.get('videoUrl') ?? '';
   const doctorName = params.get('doctor') ?? '';
+  const [precallDone, setPrecallDone] = useState(false);
 
   // Hooks stay above the early return so the call-end flow is always registered (#271).
   const handleCallEnded = useCallback(
@@ -64,6 +63,11 @@ function ConsultationContent() {
         </p>
       </div>
     );
+  }
+
+  if (!precallDone) {
+    // Camera and microphone are released by the check before the call starts.
+    return <PreCallDiagnostic onContinue={() => setPrecallDone(true)} />;
   }
 
   return (

@@ -70,7 +70,16 @@ function keyStoreRequest<T>(
   });
 }
 
-/** Default provider: one non-extractable AES-GCM key per namespace, persisted in IndexedDB. */
+/**
+ * Default provider: one non-extractable AES-GCM key per namespace, persisted in IndexedDB.
+ *
+ * Nothing here is cached in page memory beyond a single getKey() call (#251):
+ * the key is a non-extractable `CryptoKey` handle resolved fresh from
+ * IndexedDB each time, never raw key material, so there is nothing for a
+ * session lock to zeroize on this path. `src/lib/sessionSync.ts`'s 15-minute
+ * idle timer already drives the auto-lock (`SESSION_TIMEOUT`); re-auth is
+ * handled by `useSessionSync`'s `AUTH_LOGOUT` reset. See sessionSync.test.ts.
+ */
 export const indexedDbKeyProvider: LocalKeyProvider = {
   async getKey(namespace) {
     if (typeof indexedDB === 'undefined') {

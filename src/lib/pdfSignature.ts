@@ -14,6 +14,26 @@ export function detectSignaturePresence(pdfBytes: Uint8Array): SignatureStatus {
   return "unknown";
 }
 
+/**
+ * Verifies a detached signature over signed PDF bytes against the issuer's
+ * on-chain public key (#252). This is the crypto-verification primitive a
+ * future pdf-lib ByteRange extraction feeds into — it does not itself parse
+ * the PDF's signature dictionary or ByteRange, which is a larger follow-up.
+ * Any byte changed in `signedBytes` after signing makes this return false.
+ */
+export async function verifyPdfSignature(
+  signedBytes: Uint8Array,
+  signature: Uint8Array,
+  issuerPublicKey: CryptoKey,
+): Promise<boolean> {
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    issuerPublicKey,
+    signature,
+    signedBytes,
+  );
+}
+
 /* ── PQC Digital Signature Infrastructure ──────────────────────────────── */
 
 const PQC_ENABLED = process.env.NEXT_PUBLIC_PQC_ENABLED === 'true';
