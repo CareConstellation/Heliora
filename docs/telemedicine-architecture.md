@@ -113,3 +113,61 @@ To ensure reliable WebRTC media establishment behind corporate, hospital, or str
 | **Choppy audio / frozen video** | High RTT, jitter, or packet loss (> 5%) | Review WebRTC `getStats()` (`jitter`, `roundTripTime`, `packetsLost`, `framesDropped`) | `startQualityTiering` automatically steps down to `low` or `audio-only`; move closer to router |
 | **Frequent 30s reconnection overlays** | Wi-Fi/cellular handoff or VPN tunnel drops | Watch `online`/`offline` events and `iceconnectionstatechange` | Disable split-tunnel VPNs; `createReconnectionController` triggers automatic ICE restart |
 | **Call disconnects abruptly** | Short-lived meeting token expired | Check `videoRoomExpiresAt` and `scheduleTokenExpiry` | Refresh appointment room token via `fetchMeetingToken` |
+| **Remote hears hum, fan or keyboard noise** | Noise cancellation off, or the browser ignored AEC/NS constraints | `enforceAudioTrackConstraints(track)` resolves `false` | Turn **Noise cancel** on in the toolbar; use Chrome/Edge/Firefox/Safari 16.4+ |
+| **"Background effects could not start"** | MediaPipe assets missing or WebAssembly blocked | Network tab: `/mediapipe/wasm/*` and `/mediapipe/selfie_segmenter.tflite` return 200 | Run `npm run mediapipe:assets` before `build`; CSP must include `'wasm-unsafe-eval'` |
+
+---
+
+## 6. In-Call Media Processing
+
+Three client-side stages run between the camera/microphone and the peer connection. All of them run on the device, and no audio or video is sent anywhere for processing. `useConsultationMedia` wires them up when `ConsultationView` receives `localStream` / `peerConnection`, and swaps the processed tracks onto the senders with `RTCRtpSender.replaceTrack` (no renegotiation).
+
+```mermaid
+flowchart LR
+    MIC[Microphone] -->|AEC + NS + AGC constraints| HP[BiquadFilter<br/>high-pass 80 Hz]
+    HP --> AN[Analyser<br/>RMS level]
+    AN --> GATE[Gain<br/>noise gate]
+    GATE --> DST[MediaStreamDestination]
+    CAM[Camera] --> SEG[MediaPipe selfie<br/>segmentation GPU]
+    SEG --> COMP[Canvas compositor<br/>blur / backdrop]
+    COMP --> CAP[canvas.captureStream ≥24fps]
+    DST --> PC[RTCPeerConnection senders]
+    CAP --> PC
+    PC -->|getStats every 2s| ABR[Adaptive bitrate<br/>1080p→720p→480p→audio]
+    ABR -->|setParameters| PC
+```
+
+### 6.1 Adaptive bitrate & bandwidth estimation (#254)
+
+`startAdaptiveBitrate(pc)` in `src/lib/video.ts`:
+
+- Polls `getStats()` every **2 s** and computes packet loss over the **interval** (counter deltas) for both directions, using `outbound-rtp` + `remote-inbound-rtp` for send and `inbound-rtp` for receive. The worse direction wins.
+- Reads the sender-side bandwidth estimate from the nominated `candidate-pair.availableOutgoingBitrate`.
+- **Step-down:** loss > 5% moves one rung down `1080p → 720p → 480p → audio-only`.
+- **Step-up:** five consecutive polls (10 s) under 2% loss move one rung up. Polls between 2% and 5% hold the rung and reset the streak (hysteresis).
+- Rungs are applied with `RTCRtpSender.setParameters` (`scaleResolutionDownBy`, `maxBitrate`, `maxFramerate`). For audio-only the video encoding is set to `active: false`, so recovery is instant.
+- The toolbar **connection quality pill** shows Excellent / Good / Fair / Poor (from loss and RTT), plus the current rung.
+
+| Rung | Height | Max bitrate | Max fps |
+|---|---|---|---|
+| 1080p | 1080 | 2.5 Mbps | 30 |
+| 720p | 720 | 1.2 Mbps | 30 |
+| 480p | 480 | 600 kbps | 24 |
+| audio-only | — | video off | — |
+
+### 6.2 Background blur & clinical backdrops (#255)
+
+`BackgroundEffectProcessor` in `src/lib/videoBackgroundBlur.ts`, configured from the **Video settings** modal:
+
+- **Segmentation:** MediaPipe Tasks Vision `ImageSegmenter` with the selfie model in VIDEO mode, on the GPU (WebGL2) delegate with CPU fallback. Assets are **self-hosted** under `public/mediapipe/`; run `npm run mediapipe:assets`.
+- **Options:** Off, Blur · Light (6 px), Blur · Strong (16 px), and three procedural clinical backdrops (Clinic neutral, Consult room, Calm blue).
+- **≥ 24 fps:** frames are scheduled with `requestVideoFrameCallback`, and output is `canvas.captureStream(max(24, target))`. If segmentation takes more than 80% of the frame budget, the mask is reused for 2–3 frames while compositing continues every frame.
+- **Fail-safe UX:** if the model cannot load, video passes through untouched and the modal warns that the real background is visible.
+- The model is only downloaded once the user picks an effect.
+
+### 6.3 Noise cancellation & echo suppression (#256)
+
+- `getEnhancedAudioConstraints()` forces `echoCancellation`, `noiseSuppression` and `autoGainControl` on. They are used by every quality tier and re-applied to existing tracks with `enforceAudioTrackConstraints`.
+- `createNoiseCancellationPipeline(stream)` builds `source → high-pass (80 Hz, Butterworth Q) → analyser → gain (noise gate) → destination`.
+- The noise gate opens at −50 dBFS, closes below −56 dBFS (hysteresis), holds for 200 ms, and attacks in 5 ms / releases in 80 ms to a 0.05 floor gain so silence sounds natural.
+- **Noise cancel on/off** in the toolbar bypasses the filter and gate without rebuilding the graph.

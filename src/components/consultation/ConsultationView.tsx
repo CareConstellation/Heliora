@@ -8,12 +8,11 @@ import EncounterNotes from './EncounterNotes';
 import ScreenShare from './ScreenShare';
 import AnnotationCanvas from './AnnotationCanvas';
 import EncryptedChat from './EncryptedChat';
-import VideoGrid from './VideoGrid';
-import VitalsPanel from './VitalsPanel';
-import SnapshotModal, { CaptureNotice } from './SnapshotModal';
 import ReconnectionOverlay from './ReconnectionOverlay';
 import LiveSubtitles from './LiveSubtitles';
 import TranscriptionConsentModal from './TranscriptionConsentModal';
+import ConsultationToolbar from './ConsultationToolbar';
+import VideoSettingsModal, { describeBackgroundEffect } from './VideoSettingsModal';
 import { setupAutomatedReconnection, type ReconnectionManager } from '@/lib/video';
 import {
   getSpeechRecognitionConstructor,
@@ -21,25 +20,27 @@ import {
   type ISpeechRecognition,
   type ISpeechRecognitionEvent,
 } from '@/lib/transcription';
+import { useConsultationMedia } from '@/hooks/useConsultationMedia';
 import type {
-  ClinicalDraftNote,
-  ReconnectionStatus,
   TranscriptSegment,
   TranscriptionConsentState,
+  ReconnectionStatus,
+  ClinicalDraftNote,
 } from '@/types';
-import { createEncounterKey } from '@/lib/crypto';
-import {
-  createSnapshotChannel,
-  playCaptureChime,
-  type EncryptedSnapshotRecord,
-  type SnapshotChannel,
-} from '@/lib/encounterSnapshot';
+import { Mic, PhoneOff, CheckCircle2 } from 'lucide-react';
 
 interface Props {
   appointmentId: string;
   patientAddress: string;
   videoRoomUrl: string;
   doctorName: string;
+  /**
+   * Local camera/microphone stream. When provided, audio runs through the
+   * noise cancellation graph (#256) and video through background effects (#255).
+   */
+  localStream?: MediaStream | null;
+  /** Call peer connection. When provided, adaptive bitrate control runs (#254). */
+  peerConnection?: RTCPeerConnection | null;
 }
 
 type Tab = 'records' | 'notes' | 'chat' | 'vitals';
@@ -52,6 +53,8 @@ export default function ConsultationView({
   patientAddress,
   videoRoomUrl,
   doctorName,
+  localStream = null,
+  peerConnection = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -67,12 +70,10 @@ export default function ConsultationView({
     height: 450,
   });
 
-  /* ── Encrypted encounter snapshots & capture notice (#263) ─────── */
-  const [encounterKey, setEncounterKey] = useState<CryptoKey | null>(null);
-  const [snapshots, setSnapshots] = useState<EncryptedSnapshotRecord[]>([]);
-  const [showSnapshot, setShowSnapshot] = useState(false);
-  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
-  const snapshotChannelRef = useRef<SnapshotChannel | null>(null);
+  /* ── Media processing: ABR (#254), backdrops (#255), noise cancel (#256) ── */
+  const media = useConsultationMedia({ localStream, peerConnection });
+  const [showVideoSettings, setShowVideoSettings] = useState(false);
+  const outgoingStream = media.outgoingStream;
 
   /* ── Automated Reconnection & State Recovery (#66) ────────────────── */
   const [reconnectionStatus, setReconnectionStatus] = useState<ReconnectionStatus>({
@@ -84,6 +85,7 @@ export default function ConsultationView({
 
   useEffect(() => {
     const manager = setupAutomatedReconnection({
+      peerConnection,
       timeoutMs: 30_000,
       onStatusChange: (status) => {
         setReconnectionStatus(status);
@@ -99,14 +101,14 @@ export default function ConsultationView({
       onTimeout: () => {
         console.warn('Consultation reconnection timed out after 30 seconds.');
       },
-      getLocalMediaStream: () => screenStream,
+      getLocalMediaStream: () => outgoingStream ?? screenStream,
     });
 
     reconnectionManagerRef.current = manager;
     return () => {
       manager.cleanup();
     };
-  }, [screenStream]);
+  }, [screenStream, outgoingStream, peerConnection]);
 
   /* ── Audio Transcription & Mutual Consent (#64) ──────────────────── */
   const [consentState, setConsentState] = useState<TranscriptionConsentState>({
@@ -444,6 +446,15 @@ export default function ConsultationView({
           )}
         </button>
 
+        <ConsultationToolbar
+          noiseCancellationEnabled={media.noiseCancellationEnabled}
+          noiseCancellationAvailable={media.noiseCancellationAvailable}
+          onToggleNoiseCancellation={media.toggleNoiseCancellation}
+          onOpenVideoSettings={() => setShowVideoSettings(true)}
+          backgroundEffectLabel={describeBackgroundEffect(media.backgroundSettings)}
+          connectionSample={media.connectionSample}
+        />
+
         {/* Video Controls */}
         <button
           type="button"
@@ -610,19 +621,14 @@ export default function ConsultationView({
         </div>
       )}
 
-      {/* Capture indicator for encrypted snapshots (#263) */}
-      <CaptureNotice message={captureNotice} onDismiss={dismissCaptureNotice} />
-
-      {/* Encrypted Snapshot Capture (#263) */}
-      {showSnapshot && (
-        <SnapshotModal
-          appointmentId={appointmentId}
-          hasSource={!!screenStream}
-          getSource={getSnapshotSource}
-          encounterKey={encounterKey}
-          snapshots={snapshots}
-          onCaptured={handleSnapshotCaptured}
-          onClose={() => setShowSnapshot(false)}
+      {/* Background blur / clinical backdrop settings (#255) */}
+      {showVideoSettings && (
+        <VideoSettingsModal
+          settings={media.backgroundSettings}
+          onChange={media.setBackgroundSettings}
+          onClose={() => setShowVideoSettings(false)}
+          previewStream={media.previewStream}
+          stats={media.backgroundStats}
         />
       )}
 

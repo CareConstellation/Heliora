@@ -122,15 +122,17 @@ export interface QualityConstraints {
 }
 
 export function getQualityConstraints(tier: VideoQualityTier): QualityConstraints {
+  // Echo cancellation and noise suppression are enforced on every tier (#256).
+  const audio = getEnhancedAudioConstraints();
   switch (tier) {
     case 'high':
-      return { video: { width: 1280, height: 720, frameRate: 30 }, audio: {} };
+      return { video: { width: 1280, height: 720, frameRate: 30 }, audio };
     case 'medium':
-      return { video: { width: 640, height: 480, frameRate: 24 }, audio: {} };
+      return { video: { width: 640, height: 480, frameRate: 24 }, audio };
     case 'low':
-      return { video: { width: 320, height: 240, frameRate: 15 }, audio: {} };
+      return { video: { width: 320, height: 240, frameRate: 15 }, audio };
     case 'audio-only':
-      return { video: false, audio: {} };
+      return { video: false, audio };
   }
 }
 
@@ -830,123 +832,634 @@ export function startCallQualityReporter(
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   #260 — iOS Safari autoplay recovery & tap-to-start fallback
+   #254 — Adaptive bitrate streaming & bandwidth estimation
    ═══════════════════════════════════════════════════════════════════ */
 
-export type VideoPlaybackResult = 'playing' | 'blocked' | 'failed';
+/** Resolution ladder, highest first. `audio-only` disables outbound video. */
+export type AdaptiveResolution = '1080p' | '720p' | '480p' | 'audio-only';
+
+export const ADAPTIVE_RESOLUTION_LADDER: readonly AdaptiveResolution[] = [
+  '1080p',
+  '720p',
+  '480p',
+  'audio-only',
+] as const;
+
+export interface ResolutionProfile {
+  /** Target frame height in pixels (0 = video disabled). */
+  height: number;
+  /** Encoder bitrate ceiling in bits per second (0 = video disabled). */
+  maxBitrate: number;
+  maxFramerate: number;
+}
+
+export const RESOLUTION_PROFILES: Record<AdaptiveResolution, ResolutionProfile> = {
+  '1080p': { height: 1080, maxBitrate: 2_500_000, maxFramerate: 30 },
+  '720p': { height: 720, maxBitrate: 1_200_000, maxFramerate: 30 },
+  '480p': { height: 480, maxBitrate: 600_000, maxFramerate: 24 },
+  'audio-only': { height: 0, maxBitrate: 0, maxFramerate: 0 },
+};
+
+/** Packet loss (%) above which the controller steps down one rung. */
+export const ABR_STEP_DOWN_LOSS_PERCENT = 5;
+/** Packet loss (%) below which a poll counts towards stepping back up. */
+export const ABR_STEP_UP_LOSS_PERCENT = 2;
+/** Consecutive healthy polls required before stepping up (2s × 5 = 10s). */
+export const ABR_STABLE_POLLS_TO_STEP_UP = 5;
+export const ABR_POLL_INTERVAL_MS = 2000;
+
+/** Raw cumulative RTP counters read from one `getStats()` snapshot. */
+export interface RtpCounters {
+  timestamp: number;
+  /** Packets we sent (outbound-rtp) and the remote reported lost (remote-inbound-rtp). */
+  packetsSent: number;
+  remotePacketsLost: number;
+  /** Packets we received (inbound-rtp) and lost on the way in. */
+  packetsReceived: number;
+  packetsLost: number;
+  /** Sender-side bandwidth estimate from the nominated candidate pair, in kbps. */
+  availableOutgoingKbps: number | null;
+  /** Current round-trip time in milliseconds, if reported. */
+  rttMs: number | null;
+}
 
 /**
- * Starts playback on a `<video>` element and classifies the outcome.
+ * Reads cumulative RTP counters from a stats report. Counters are summed across
+ * audio and video streams so audio-only calls still produce a loss signal.
  *
- * iOS Safari (and other browsers) reject `play()` with `NotAllowedError` when
- * playback is not allowed without a user gesture. That is reported as `'blocked'`
- * so the UI can show a "Tap to Start Video" control. Any other rejection is
- * `'failed'`.
+ * Time: O(s) over stats entries. Space: O(1).
+ */
+export function readRtpCounters(
+  stats: RTCStatsReport | Iterable<Record<string, unknown>>,
+): RtpCounters {
+  const counters: RtpCounters = {
+    timestamp: 0,
+    packetsSent: 0,
+    remotePacketsLost: 0,
+    packetsReceived: 0,
+    packetsLost: 0,
+    availableOutgoingKbps: null,
+    rttMs: null,
+  };
+
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+  const visit = (r: Record<string, unknown>) => {
+    if (typeof r.timestamp === 'number' && r.timestamp > counters.timestamp) {
+      counters.timestamp = r.timestamp;
+    }
+    switch (r.type) {
+      case 'outbound-rtp':
+        counters.packetsSent += num(r.packetsSent);
+        break;
+      case 'remote-inbound-rtp':
+        counters.remotePacketsLost += Math.max(0, num(r.packetsLost));
+        if (counters.rttMs === null && typeof r.roundTripTime === 'number') {
+          counters.rttMs = r.roundTripTime * 1000;
+        }
+        break;
+      case 'inbound-rtp':
+        counters.packetsReceived += num(r.packetsReceived);
+        counters.packetsLost += Math.max(0, num(r.packetsLost));
+        break;
+      case 'candidate-pair':
+        if (r.nominated === true || r.state === 'succeeded') {
+          if (typeof r.availableOutgoingBitrate === 'number') {
+            counters.availableOutgoingKbps = r.availableOutgoingBitrate / 1000;
+          }
+          if (typeof r.currentRoundTripTime === 'number') {
+            counters.rttMs = r.currentRoundTripTime * 1000;
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
+  if (typeof (stats as RTCStatsReport).forEach === 'function') {
+    (stats as RTCStatsReport).forEach((r) => visit(r as unknown as Record<string, unknown>));
+  } else {
+    for (const r of stats as Iterable<Record<string, unknown>>) visit(r);
+  }
+  return counters;
+}
+
+/**
+ * Packet loss (%) over the interval between two snapshots, taking the worse of
+ * the send and receive directions. Uses counter deltas so a lossy burst early
+ * in the call does not mask (or inflate) the current network conditions.
  *
  * Time: O(1). Space: O(1).
  */
-export async function startVideoPlayback(video: HTMLVideoElement): Promise<VideoPlaybackResult> {
-  // iOS Safari only keeps media inline when the attribute is present on the element.
-  video.playsInline = true;
-  video.setAttribute('playsinline', '');
-  try {
-    await video.play();
-    return 'playing';
-  } catch (err) {
-    const name = (err as { name?: unknown } | null)?.name;
-    return name === 'NotAllowedError' ? 'blocked' : 'failed';
-  }
+export function computeIntervalPacketLoss(prev: RtpCounters, curr: RtpCounters): number {
+  const sent = curr.packetsSent - prev.packetsSent;
+  const remoteLost = curr.remotePacketsLost - prev.remotePacketsLost;
+  const received = curr.packetsReceived - prev.packetsReceived;
+  const lost = curr.packetsLost - prev.packetsLost;
+
+  const outboundLoss = sent > 0 && remoteLost > 0 ? (remoteLost / sent) * 100 : 0;
+  const inboundTotal = received + lost;
+  const inboundLoss = inboundTotal > 0 && lost > 0 ? (lost / inboundTotal) * 100 : 0;
+
+  return Math.min(100, Math.max(0, outboundLoss, inboundLoss));
 }
 
-export interface VideoPlaybackWatchOptions {
-  /** Consecutive failed resume attempts before giving up. Default: 5. */
-  maxRetries?: number;
-  /** Base delay between resume attempts; grows linearly per retry. Default: 1000 ms. */
-  retryDelayMs?: number;
-  /** Autoplay was refused; the UI should ask the viewer to tap to start. */
-  onBlocked?: () => void;
-  /** Resume kept failing after `maxRetries` attempts. */
-  onFailed?: () => void;
-  /** Playback resumed after an interruption. */
-  onResumed?: () => void;
+export interface AdaptiveDecision {
+  resolution: AdaptiveResolution;
+  stablePolls: number;
 }
 
 /**
- * Keeps a video element playing through interruptions that pause it without user
- * action: an incoming phone call on iOS, the tab being backgrounded, or a network
- * stall. When the element pauses, or the page becomes visible again while paused,
- * it retries `play()` with linear backoff. A refused autoplay (`'blocked'`) stops
- * automatic retries, because only a user gesture can resume it.
+ * Pure ladder controller: step down one rung when loss exceeds 5%, step back
+ * up one rung only after {@link ABR_STABLE_POLLS_TO_STEP_UP} consecutive polls
+ * below 2% loss. The gap between the thresholds (hysteresis) stops the encoder
+ * oscillating on a borderline link.
  *
- * Returns a cleanup function that removes every listener and pending timer.
- *
- * Time: O(1) per event. Space: O(1).
+ * Time: O(1). Space: O(1).
  */
-export function watchVideoPlayback(
-  video: HTMLVideoElement,
-  options: VideoPlaybackWatchOptions = {},
-): () => void {
-  const { maxRetries = 5, retryDelayMs = 1000, onBlocked, onFailed, onResumed } = options;
-  let retries = 0;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let stopped = false;
+export function nextAdaptiveResolution(
+  current: AdaptiveResolution,
+  packetLossPercent: number,
+  stablePolls: number,
+  ceiling: AdaptiveResolution = '1080p',
+): AdaptiveDecision {
+  const index = ADAPTIVE_RESOLUTION_LADDER.indexOf(current);
+  const ceilingIndex = ADAPTIVE_RESOLUTION_LADDER.indexOf(ceiling);
 
-  const hasSource = () => video.srcObject !== null || video.getAttribute('src') !== null;
-
-  const attempt = async () => {
-    timer = null;
-    if (stopped || !video.paused || !hasSource()) return;
-
-    const result = await startVideoPlayback(video);
-    if (stopped) return;
-
-    if (result === 'playing') {
-      retries = 0;
-      onResumed?.();
-      return;
-    }
-    if (result === 'blocked') {
-      onBlocked?.();
-      return;
-    }
-
-    retries += 1;
-    if (retries >= maxRetries) {
-      onFailed?.();
-      return;
-    }
-    schedule();
-  };
-
-  const schedule = () => {
-    if (stopped || timer !== null) return;
-    timer = setTimeout(() => {
-      void attempt();
-    }, retryDelayMs * Math.max(1, retries));
-  };
-
-  const onPause = () => {
-    if (!video.ended) schedule();
-  };
-
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible' && video.paused) {
-      schedule();
-    }
-  };
-
-  video.addEventListener('pause', onPause);
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
+  if (packetLossPercent > ABR_STEP_DOWN_LOSS_PERCENT) {
+    const next = ADAPTIVE_RESOLUTION_LADDER[Math.min(index + 1, ADAPTIVE_RESOLUTION_LADDER.length - 1)]!;
+    return { resolution: next, stablePolls: 0 };
   }
 
-  return () => {
-    stopped = true;
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
-    video.removeEventListener('pause', onPause);
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+  if (packetLossPercent < ABR_STEP_UP_LOSS_PERCENT) {
+    const polls = stablePolls + 1;
+    if (polls >= ABR_STABLE_POLLS_TO_STEP_UP && index > ceilingIndex) {
+      return { resolution: ADAPTIVE_RESOLUTION_LADDER[index - 1]!, stablePolls: 0 };
     }
+    return { resolution: current, stablePolls: polls };
+  }
+
+  // Between thresholds: hold the current rung and reset the stability streak.
+  return { resolution: current, stablePolls: 0 };
+}
+
+export type ConnectionQuality = 'excellent' | 'good' | 'fair' | 'poor' | 'unknown';
+
+/**
+ * Maps loss/RTT to the user-facing quality pill level.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function classifyConnectionQuality(
+  packetLossPercent: number | null,
+  rttMs: number | null,
+): ConnectionQuality {
+  if (packetLossPercent === null) return 'unknown';
+  const rtt = rttMs ?? 0;
+  if (packetLossPercent > 10 || rtt > 600) return 'poor';
+  if (packetLossPercent > ABR_STEP_DOWN_LOSS_PERCENT || rtt > 300) return 'fair';
+  if (packetLossPercent > 1 || rtt > 150) return 'good';
+  return 'excellent';
+}
+
+/**
+ * Computes `scaleResolutionDownBy` so the encoder outputs `targetHeight` from a
+ * source of `sourceHeight`. Never upscales (minimum factor 1).
+ */
+export function computeScaleDownFactor(sourceHeight: number, targetHeight: number): number {
+  if (targetHeight <= 0 || sourceHeight <= 0) return 1;
+  return Math.max(1, sourceHeight / targetHeight);
+}
+
+/**
+ * Applies a ladder rung to one video `RTCRtpSender` through
+ * `setParameters` (no renegotiation needed). `audio-only` deactivates the
+ * video encoding instead of tearing down the track, so stepping back up is
+ * instant.
+ */
+export async function applyResolutionToSender(
+  sender: RTCRtpSender,
+  resolution: AdaptiveResolution,
+): Promise<void> {
+  if (!sender.track || sender.track.kind !== 'video') return;
+
+  const params = sender.getParameters();
+  if (!params.encodings || params.encodings.length === 0) {
+    params.encodings = [{}];
+  }
+
+  const profile = RESOLUTION_PROFILES[resolution];
+  const sourceHeight =
+    (typeof sender.track.getSettings === 'function' ? sender.track.getSettings().height : undefined) ??
+    profile.height;
+
+  for (const encoding of params.encodings) {
+    if (resolution === 'audio-only') {
+      encoding.active = false;
+      continue;
+    }
+    encoding.active = true;
+    encoding.maxBitrate = profile.maxBitrate;
+    encoding.maxFramerate = profile.maxFramerate;
+    encoding.scaleResolutionDownBy = computeScaleDownFactor(sourceHeight, profile.height);
+  }
+
+  await sender.setParameters(params);
+}
+
+export interface AdaptiveBitrateSample {
+  timestamp: number;
+  packetLossPercent: number;
+  rttMs: number | null;
+  availableOutgoingKbps: number | null;
+  resolution: AdaptiveResolution;
+  quality: ConnectionQuality;
+}
+
+export interface AdaptiveBitrateOptions {
+  intervalMs?: number;
+  initialResolution?: AdaptiveResolution;
+  /** Highest rung the controller may step up to (e.g. the camera's native size). */
+  ceiling?: AdaptiveResolution;
+  /** Apply rung changes to the peer connection's video senders. Default true. */
+  applyToSenders?: boolean;
+  onResolutionChange?: (resolution: AdaptiveResolution, sample: AdaptiveBitrateSample) => void;
+  onSample?: (sample: AdaptiveBitrateSample) => void;
+}
+
+export interface AdaptiveBitrateController {
+  stop: () => void;
+  getResolution: () => AdaptiveResolution;
+  /** Runs one poll immediately; exposed for tests and manual refresh. */
+  poll: () => Promise<AdaptiveBitrateSample | null>;
+}
+
+/**
+ * Polls `peerConnection.getStats()` every 2 seconds, estimates interval packet
+ * loss and available bandwidth, and walks the 1080p → 720p → 480p →
+ * audio-only ladder.
+ *
+ * Time: O(s) per poll over stats entries. Space: O(1) (only the previous
+ * counter snapshot is retained).
+ */
+export function startAdaptiveBitrate(
+  peerConnection: RTCPeerConnection,
+  options: AdaptiveBitrateOptions = {},
+): AdaptiveBitrateController {
+  const {
+    intervalMs = ABR_POLL_INTERVAL_MS,
+    initialResolution = '720p',
+    ceiling = '1080p',
+    applyToSenders = true,
+    onResolutionChange,
+    onSample,
+  } = options;
+
+  let resolution: AdaptiveResolution = initialResolution;
+  let stablePolls = 0;
+  let previous: RtpCounters | null = null;
+  let stopped = false;
+
+  const applyResolution = async (next: AdaptiveResolution) => {
+    if (!applyToSenders) return;
+    const senders = peerConnection.getSenders?.() ?? [];
+    await Promise.all(
+      senders.map((sender) =>
+        applyResolutionToSender(sender, next).catch((err) => {
+          captureError(err instanceof Error ? err : new Error(String(err)), {
+            context: 'adaptive-bitrate-set-parameters',
+          });
+        }),
+      ),
+    );
+  };
+
+  const poll = async (): Promise<AdaptiveBitrateSample | null> => {
+    if (stopped) return null;
+    let current: RtpCounters;
+    try {
+      current = readRtpCounters(await peerConnection.getStats());
+    } catch {
+      return null; // transient while the connection is closing
+    }
+
+    const prev = previous;
+    previous = current;
+    if (!prev) return null; // need two snapshots for a delta
+
+    const packetLossPercent = computeIntervalPacketLoss(prev, current);
+    const decision = nextAdaptiveResolution(resolution, packetLossPercent, stablePolls, ceiling);
+    stablePolls = decision.stablePolls;
+
+    const sample: AdaptiveBitrateSample = {
+      timestamp: current.timestamp || Date.now(),
+      packetLossPercent: Math.round(packetLossPercent * 100) / 100,
+      rttMs: current.rttMs,
+      availableOutgoingKbps: current.availableOutgoingKbps,
+      resolution: decision.resolution,
+      quality: classifyConnectionQuality(packetLossPercent, current.rttMs),
+    };
+
+    if (decision.resolution !== resolution) {
+      resolution = decision.resolution;
+      await applyResolution(resolution);
+      onResolutionChange?.(resolution, sample);
+    }
+    onSample?.(sample);
+    return sample;
+  };
+
+  void applyResolution(resolution);
+  void poll();
+  const handle = setInterval(() => {
+    void poll();
+  }, intervalMs);
+
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(handle);
+    },
+    getResolution: () => resolution,
+    poll,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   #256 — Browser-side noise cancellation & acoustic echo suppression
+   ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * Capture constraints that force the browser's built-in AEC, noise
+ * suppression and AGC on. Chrome, Firefox and Safari all honour these; they
+ * run before our Web Audio graph, which then removes the residual rumble and
+ * room noise the built-in stages leave behind.
+ */
+export const ENHANCED_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1,
+};
+
+/** getUserMedia constraints with echo cancellation & noise suppression enforced. */
+export function getEnhancedAudioConstraints(
+  overrides: MediaTrackConstraints = {},
+): MediaTrackConstraints {
+  return { ...overrides, ...ENHANCED_AUDIO_CONSTRAINTS };
+}
+
+/**
+ * Re-applies the enhanced constraints to an existing microphone track (e.g. a
+ * track handed over by the video SDK). Resolves with whether the browser
+ * reports both AEC and noise suppression as active afterwards.
+ */
+export async function enforceAudioTrackConstraints(track: MediaStreamTrack): Promise<boolean> {
+  try {
+    await track.applyConstraints(getEnhancedAudioConstraints());
+  } catch (err) {
+    captureError(err instanceof Error ? err : new Error(String(err)), {
+      context: 'audio-apply-constraints',
+    });
+  }
+  const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+  return settings.echoCancellation === true && settings.noiseSuppression === true;
+}
+
+export const HIGH_PASS_CUTOFF_HZ = 80;
+
+export interface NoiseGateConfig {
+  /** Level (dBFS) at which the gate opens. */
+  openThresholdDb: number;
+  /** Level (dBFS) below which the gate may close; lower than open for hysteresis. */
+  closeThresholdDb: number;
+  /** Time the gate stays open after the level drops below the close threshold. */
+  holdMs: number;
+  /** Gain time constants (seconds) for opening and closing. */
+  attackSeconds: number;
+  releaseSeconds: number;
+  /** Gain applied while closed (0 = full mute, small values sound more natural). */
+  floorGain: number;
+}
+
+export const DEFAULT_NOISE_GATE: NoiseGateConfig = {
+  openThresholdDb: -50,
+  closeThresholdDb: -56,
+  holdMs: 200,
+  attackSeconds: 0.005,
+  releaseSeconds: 0.08,
+  floorGain: 0.05,
+};
+
+/**
+ * Root-mean-square level of a time-domain buffer, in dBFS. Silence maps to
+ * -Infinity's practical floor of -100 dB.
+ *
+ * Time: O(n) over samples. Space: O(1).
+ */
+export function computeRmsDb(samples: Float32Array): number {
+  if (samples.length === 0) return -100;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]!;
+    sum += s * s;
+  }
+  const rms = Math.sqrt(sum / samples.length);
+  if (rms <= 0) return -100;
+  return Math.max(-100, 20 * Math.log10(rms));
+}
+
+export interface NoiseGateState {
+  open: boolean;
+  /** Last time (ms) the level was above the close threshold. */
+  lastActiveAt: number;
+}
+
+/**
+ * Pure gate state machine with hysteresis and hold.
+ *
+ * Time: O(1). Space: O(1).
+ */
+export function evaluateNoiseGate(
+  state: NoiseGateState,
+  levelDb: number,
+  nowMs: number,
+  config: NoiseGateConfig = DEFAULT_NOISE_GATE,
+): NoiseGateState {
+  if (levelDb >= config.openThresholdDb) {
+    return { open: true, lastActiveAt: nowMs };
+  }
+  if (state.open && levelDb >= config.closeThresholdDb) {
+    return { open: true, lastActiveAt: nowMs };
+  }
+  if (state.open && nowMs - state.lastActiveAt < config.holdMs) {
+    return state;
+  }
+  return { open: false, lastActiveAt: state.lastActiveAt };
+}
+
+/** Node kinds in the processing graph, in signal order. */
+export const AUDIO_GRAPH_TOPOLOGY = [
+  'MediaStreamAudioSourceNode',
+  'BiquadFilterNode(highpass)',
+  'AnalyserNode(gate-sidechain)',
+  'GainNode(noise-gate)',
+  'MediaStreamAudioDestinationNode',
+] as const;
+
+export interface NoiseCancellationOptions {
+  highPassHz?: number;
+  gate?: Partial<NoiseGateConfig>;
+  /** Interval for gate level detection. 10ms keeps attack well under a syllable. */
+  detectionIntervalMs?: number;
+  /** Inject an AudioContext (tests, or to share one across pipelines). */
+  audioContext?: AudioContext;
+}
+
+export interface NoiseCancellationPipeline {
+  /** Processed stream: filtered/gated audio + the input's original video tracks. */
+  stream: MediaStream;
+  context: AudioContext;
+  nodes: {
+    source: MediaStreamAudioSourceNode;
+    highPass: BiquadFilterNode;
+    analyser: AnalyserNode;
+    gate: GainNode;
+    destination: MediaStreamAudioDestinationNode;
+  };
+  /** Bypass (false) or re-enable (true) the filter + gate without rebuilding the graph. */
+  setEnabled: (enabled: boolean) => void;
+  isEnabled: () => boolean;
+  isGateOpen: () => boolean;
+  close: () => Promise<void>;
+}
+
+function getAudioContextCtor(): (new () => AudioContext) | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    AudioContext?: new () => AudioContext;
+    webkitAudioContext?: new () => AudioContext;
+  };
+  return w.AudioContext ?? w.webkitAudioContext ?? null;
+}
+
+export function isNoiseCancellationSupported(): boolean {
+  return getAudioContextCtor() !== null;
+}
+
+/**
+ * Builds the Web Audio graph
+ * `source → high-pass (80 Hz) → analyser → gate gain → destination`.
+ *
+ * The 80 Hz high-pass removes HVAC rumble, desk thumps and mains hum
+ * harmonics without touching the voice fundamental (~85–255 Hz). The gate
+ * attenuates the residual noise floor between utterances; its level detector
+ * reads the analyser (post-filter) so rumble cannot hold the gate open.
+ *
+ * Time: O(1) graph construction; O(fftSize) per detection tick.
+ * Space: O(fftSize) for the analyser buffer.
+ */
+export function createNoiseCancellationPipeline(
+  input: MediaStream,
+  options: NoiseCancellationOptions = {},
+): NoiseCancellationPipeline {
+  const Ctor = getAudioContextCtor();
+  const context = options.audioContext ?? (Ctor ? new Ctor() : null);
+  if (!context) {
+    throw new Error('Web Audio API is not available in this browser.');
+  }
+
+  const gateConfig: NoiseGateConfig = { ...DEFAULT_NOISE_GATE, ...options.gate };
+  const detectionIntervalMs = options.detectionIntervalMs ?? 10;
+
+  const source = context.createMediaStreamSource(input);
+
+  const highPass = context.createBiquadFilter();
+  highPass.type = 'highpass';
+  highPass.frequency.value = options.highPassHz ?? HIGH_PASS_CUTOFF_HZ;
+  highPass.Q.value = Math.SQRT1_2; // Butterworth: maximally flat passband
+
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0;
+
+  const gate = context.createGain();
+  gate.gain.value = gateConfig.floorGain;
+
+  const destination = context.createMediaStreamDestination();
+
+  source.connect(highPass);
+  highPass.connect(analyser);
+  analyser.connect(gate);
+  gate.connect(destination);
+
+  const buffer = new Float32Array(analyser.fftSize);
+  let gateState: NoiseGateState = { open: false, lastActiveAt: 0 };
+  let enabled = true;
+  let closed = false;
+
+  const setGain = (target: number, timeConstant: number) => {
+    const now = context.currentTime;
+    gate.gain.cancelScheduledValues(now);
+    gate.gain.setTargetAtTime(target, now, timeConstant);
+  };
+
+  const detect = () => {
+    if (!enabled || closed) return;
+    analyser.getFloatTimeDomainData(buffer);
+    const level = computeRmsDb(buffer);
+    const next = evaluateNoiseGate(gateState, level, Date.now(), gateConfig);
+    if (next.open !== gateState.open) {
+      setGain(
+        next.open ? 1 : gateConfig.floorGain,
+        next.open ? gateConfig.attackSeconds : gateConfig.releaseSeconds,
+      );
+    }
+    gateState = next;
+  };
+  const timer = setInterval(detect, detectionIntervalMs);
+
+  const stream = new MediaStream([
+    ...destination.stream.getAudioTracks(),
+    ...input.getVideoTracks(),
+  ]);
+
+  const setEnabled = (value: boolean) => {
+    if (closed || value === enabled) return;
+    enabled = value;
+    if (value) {
+      // 0 Hz high-pass ≈ passthrough; restore cutoff and let the gate re-arm.
+      highPass.frequency.value = options.highPassHz ?? HIGH_PASS_CUTOFF_HZ;
+      gateState = { open: false, lastActiveAt: 0 };
+      setGain(gateConfig.floorGain, gateConfig.releaseSeconds);
+    } else {
+      highPass.frequency.value = 0;
+      setGain(1, gateConfig.attackSeconds);
+    }
+  };
+
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    source.disconnect();
+    highPass.disconnect();
+    analyser.disconnect();
+    gate.disconnect();
+    destination.stream.getAudioTracks().forEach((t) => t.stop());
+    if (!options.audioContext && context.state !== 'closed') {
+      await context.close();
+    }
+  };
+
+  return {
+    stream,
+    context,
+    nodes: { source, highPass, analyser, gate, destination },
+    setEnabled,
+    isEnabled: () => enabled,
+    isGateOpen: () => gateState.open,
+    close,
   };
 }
